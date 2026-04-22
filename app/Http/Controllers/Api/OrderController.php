@@ -3,15 +3,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Resources\OrderResource;
 use App\Models\Order;
 use App\Models\Staff;
-use App\Models\Tenant;
 use App\Services\OrderService;
-use App\Http\Resources\OrderResource;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Validation\ValidationException;
 
 class OrderController extends Controller
 {
@@ -60,15 +57,12 @@ class OrderController extends Controller
     {
         $data = $request->validate([
             'reason' => 'required|string|max:500',
-            'admin_pin' => 'nullable|string|min:4|max:6',
-            'owner_email' => 'nullable|email',
-            'owner_password' => 'nullable|string|min:6',
         ]);
 
         /** @var Staff $staff */
         $staff = $request->user();
         $shift = $request->input('active_shift');
-        $authorization = $this->resolveRefundAuthorization($request, $staff, $data);
+        $authorization = $this->resolveRefundAuthorization($staff);
 
         $order = $this->orderService->refundOrder(
             $order,
@@ -81,7 +75,7 @@ class OrderController extends Controller
         return response()->json(['data' => $order->load(['groups.items', 'involvedStaff'])]);
     }
 
-    private function resolveRefundAuthorization(Request $request, Staff $staff, array $data): array
+    private function resolveRefundAuthorization(Staff $staff): array
     {
         if ($staff->isAdmin()) {
             return [
@@ -92,61 +86,11 @@ class OrderController extends Controller
             ];
         }
 
-        $tenantId = $staff->tenant_id;
-        $adminPin = trim((string) ($data['admin_pin'] ?? ''));
-        if ($adminPin !== '') {
-            $admin = Staff::query()
-                ->where('tenant_id', $tenantId)
-                ->where('role', 'admin')
-                ->where('is_active', true)
-                ->get()
-                ->first(fn (Staff $candidate) => Hash::check($adminPin, $candidate->pin));
-
-            if (!$admin) {
-                throw ValidationException::withMessages([
-                    'admin_pin' => 'PIN admin tidak valid.',
-                ]);
-            }
-
-            return [
-                'method' => 'admin-pin',
-                'authorized_by' => $admin->name,
-                'authorized_role' => 'admin',
-                'owner_email' => null,
-            ];
-        }
-
-        $ownerEmail = strtolower(trim((string) ($data['owner_email'] ?? '')));
-        $ownerPassword = (string) ($data['owner_password'] ?? '');
-        if ($ownerEmail !== '' || $ownerPassword !== '') {
-            if ($ownerEmail === '' || $ownerPassword === '') {
-                throw ValidationException::withMessages([
-                    'owner_email' => 'Email owner dan password owner wajib diisi bersamaan.',
-                ]);
-            }
-
-            /** @var Tenant|null $tenant */
-            $tenant = Tenant::query()
-                ->whereKey($tenantId)
-                ->where('email', $ownerEmail)
-                ->first();
-
-            if (!$tenant || !Hash::check($ownerPassword, $tenant->password)) {
-                throw ValidationException::withMessages([
-                    'owner_email' => 'Kredensial owner tidak valid.',
-                ]);
-            }
-
-            return [
-                'method' => 'owner-credentials',
-                'authorized_by' => $tenant->name,
-                'authorized_role' => 'owner',
-                'owner_email' => $tenant->email,
-            ];
-        }
-
-        throw ValidationException::withMessages([
-            'authorization' => 'Refund membutuhkan PIN admin atau kredensial owner.',
-        ]);
+        return [
+            'method' => 'staff-session',
+            'authorized_by' => $staff->name,
+            'authorized_role' => $staff->role,
+            'owner_email' => null,
+        ];
     }
 }

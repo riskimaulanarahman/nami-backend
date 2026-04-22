@@ -6,6 +6,7 @@ use App\Models\MenuCategory;
 use App\Models\Ingredient;
 use App\Models\MenuItem;
 use App\Models\MenuItemRecipe;
+use App\Models\Member;
 use App\Models\OpenBill;
 use App\Models\Order;
 use App\Models\PaymentOption;
@@ -578,7 +579,7 @@ class PosFlowTest extends TestCase
             ->assertJsonPath('data.0.status', 'completed');
     }
 
-    public function test_non_admin_refund_requires_server_side_authorization(): void
+    public function test_non_admin_refund_uses_staff_session_audit_without_extra_authorization(): void
     {
         [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Approval', 'approval@example.com', 'password123', '9999');
         $cashier = $this->createCashier($tenant, 'Cashier Approval', '123456');
@@ -618,31 +619,48 @@ class PosFlowTest extends TestCase
             'reason' => 'Kasir coba refund langsung',
         ], [
             'Authorization' => "Bearer {$staffToken}",
-        ])->assertStatus(422)
-            ->assertJsonValidationErrors(['authorization']);
-
-        $this->postJson("/api/orders/{$order->id}/refund", [
-            'reason' => 'PIN admin valid',
-            'admin_pin' => '9999',
-        ], [
-            'Authorization' => "Bearer {$staffToken}",
         ])->assertOk()
-            ->assertJsonPath('data.refund_authorization_method', 'admin-pin')
-            ->assertJsonPath('data.refund_authorized_by', $admin->name)
-            ->assertJsonPath('data.refund_authorized_role', 'admin');
+            ->assertJsonPath('data.refund_authorization_method', 'staff-session')
+            ->assertJsonPath('data.refund_authorized_by', $cashier->name)
+            ->assertJsonPath('data.refund_authorized_role', 'kasir');
     }
 
-    public function test_owner_credentials_can_authorize_refund_for_non_admin_staff(): void
+    public function test_open_bill_store_accepts_initial_groups_items_and_member_meta(): void
     {
-        [$tenant] = $this->createTenantWithAdmin('Tenant Owner Refund', 'owner-refund@example.com', 'password123', '2222');
-        $cashier = $this->createCashier($tenant, 'Cashier Owner', '333333');
-        $staffToken = $this->loginAsStaff($tenant, $cashier, 'password123', '333333');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Snapshot Draft', 'owner-refund@example.com', 'password123', '2222');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2222');
 
-        $payment = PaymentOption::create([
+        $table = Table::create([
             'tenant_id' => $tenant->id,
-            'name' => 'Cash',
-            'type' => 'cash',
-            'is_active' => true,
+            'name' => 'Table Snapshot',
+            'type' => 'standard',
+            'hourly_rate' => 20000,
+        ]);
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Food',
+            'emoji' => '🍔',
+        ]);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Burger',
+            'category_id' => $category->id,
+            'legacy_category' => 'food',
+            'price' => 22000,
+            'cost' => 8000,
+            'emoji' => '🍔',
+            'is_available' => true,
+        ]);
+
+        $member = Member::create([
+            'tenant_id' => $tenant->id,
+            'code' => 'MEM-0001',
+            'name' => 'Snapshot Member',
+            'phone' => '08123456789',
+            'email' => 'snapshot-member@example.com',
+            'points_balance' => 120,
         ]);
 
         $this->postJson('/api/cashier-shifts/open', [
@@ -651,34 +669,38 @@ class PosFlowTest extends TestCase
             'Authorization' => "Bearer {$staffToken}",
         ])->assertStatus(201);
 
-        $order = Order::create([
-            'tenant_id' => $tenant->id,
-            'table_name' => 'Walk In',
-            'table_type' => 'standard',
-            'session_type' => 'cafe',
-            'bill_type' => 'takeaway',
-            'start_time' => now()->subMinutes(10),
-            'end_time' => now(),
-            'served_by' => $cashier->name,
-            'status' => 'completed',
-            'order_total' => 30000,
-            'grand_total' => 30000,
-            'payment_method_id' => $payment->id,
-            'payment_method_name' => 'Cash',
-            'payment_method_type' => 'cash',
-        ]);
-
-        $this->postJson("/api/orders/{$order->id}/refund", [
-            'reason' => 'Owner setuju refund',
-            'owner_email' => $tenant->email,
-            'owner_password' => 'password123',
+        $response = $this->postJson('/api/open-bills', [
+            'customer_name' => 'Snapshot Guest',
+            'member_id' => $member->id,
+            'points_to_redeem' => 25,
+            'groups' => [
+                [
+                    'fulfillment_type' => 'dine-in',
+                    'table_id' => $table->id,
+                    'items' => [
+                        [
+                            'menu_item_id' => $menuItem->id,
+                            'quantity' => 2,
+                            'note' => 'No onions',
+                        ],
+                    ],
+                ],
+            ],
         ], [
             'Authorization' => "Bearer {$staffToken}",
-        ])->assertOk()
-            ->assertJsonPath('data.refund_authorization_method', 'owner-credentials')
-            ->assertJsonPath('data.refund_authorized_by', $tenant->name)
-            ->assertJsonPath('data.refund_authorized_role', 'owner')
-            ->assertJsonPath('data.refund_owner_email', $tenant->email);
+        ])->assertCreated()
+            ->assertJsonPath('data.customer_name', 'Snapshot Guest')
+            ->assertJsonPath('data.member_id', $member->id)
+            ->assertJsonPath('data.points_to_redeem', 25)
+            ->assertJsonPath('data.groups.0.fulfillment_type', 'dine-in')
+            ->assertJsonPath('data.groups.0.table_id', $table->id)
+            ->assertJsonPath('data.groups.0.items.0.menu_item_id', $menuItem->id)
+            ->assertJsonPath('data.groups.0.items.0.quantity', 2)
+            ->assertJsonPath('data.groups.0.items.0.note', 'No onions');
+
+        $table->refresh();
+        $this->assertNotNull($table->active_open_bill_id);
+        $this->assertSame(2, OpenBill::findOrFail($response->json('data.id'))->groups()->first()->items()->sum('quantity'));
     }
 
     public function test_stock_is_restored_when_table_and_open_bill_items_are_reduced_removed_or_deleted(): void

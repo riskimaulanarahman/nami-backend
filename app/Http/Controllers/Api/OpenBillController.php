@@ -4,21 +4,21 @@ namespace App\Http\Controllers\Api;
 
 use App\Enums\FulfillmentType;
 use App\Enums\OpenBillStatus;
-use App\Enums\TableStatus;
 use App\Http\Controllers\Controller;
+use App\Models\BusinessSettings;
 use App\Models\MenuItem;
 use App\Models\OpenBill;
 use App\Models\OpenBillGroup;
+use App\Models\OpenBillGroupItem;
 use App\Models\OpenBillInvolvedStaff;
 use App\Models\Table;
 use App\Services\BillingService;
 use App\Services\OrderService;
 use App\Services\StockService;
-use App\Models\BusinessSettings;
-use App\Http\Resources\TableResource;
 use Illuminate\Http\Request;
-use Illuminate\Validation\Rule;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class OpenBillController extends Controller
 {
@@ -33,7 +33,8 @@ class OpenBillController extends Controller
         return response()->json([
             'data' => OpenBill::where('status', OpenBillStatus::Open)
                 ->with(['groups.items.menuItem', 'involvedStaff', 'member'])
-                ->orderByDesc('created_at')->get(),
+                ->orderByDesc('created_at')
+                ->get(),
         ]);
     }
 
@@ -43,52 +44,103 @@ class OpenBillController extends Controller
 
         $data = $request->validate([
             'table_id' => ['nullable', Rule::exists('tables', 'id')->where('tenant_id', $tenantId)],
+            'member_id' => ['nullable', Rule::exists('members', 'id')->where('tenant_id', $tenantId)],
             'customer_name' => 'nullable|string|max:255',
+            'points_to_redeem' => 'nullable|integer|min:0',
+            'fulfillment_type' => 'nullable|in:dine-in,takeaway',
             'waiting_list_entry_id' => ['nullable', Rule::exists('waiting_list_entries', 'id')->where('tenant_id', $tenantId)],
+            'groups' => 'nullable|array',
+            'groups.*.fulfillment_type' => 'required_with:groups|in:dine-in,takeaway',
+            'groups.*.table_id' => ['nullable', Rule::exists('tables', 'id')->where('tenant_id', $tenantId)],
+            'groups.*.table_name' => 'nullable|string|max:255',
+            'groups.*.items' => 'nullable|array',
+            'groups.*.items.*.menu_item_id' => ['required_with:groups.*.items', Rule::exists('menu_items', 'id')->where('tenant_id', $tenantId)],
+            'groups.*.items.*.quantity' => 'nullable|integer|min:1',
+            'groups.*.items.*.note' => 'nullable|string|max:255',
         ]);
 
         $staff = $request->user();
         $shift = $request->input('active_shift');
         $code = $this->generateOpenBillCode();
-        $table = null;
+        $groupPayloads = $this->normalizeStoreGroups($data);
+        $tableIds = collect($groupPayloads)
+            ->pluck('table_id')
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
 
-        if (!empty($data['table_id'])) {
-            $table = Table::find($data['table_id']);
-            if ($table?->active_open_bill_id) {
-                return response()->json([
-                    'message' => 'Meja sudah terhubung dengan open bill lain.',
-                ], 422);
+        if (!empty($tableIds)) {
+            $tables = Table::query()->whereIn('id', $tableIds)->get()->keyBy('id');
+            foreach ($tableIds as $tableId) {
+                $table = $tables[$tableId] ?? null;
+                if ($table?->active_open_bill_id) {
+                    return response()->json([
+                        'message' => 'Table is already linked to another draft.',
+                    ], 422);
+                }
             }
         }
 
-        $bill = OpenBill::create([
-            'code' => $code,
-            'customer_name' => $data['customer_name'] ?? '',
-            'status' => OpenBillStatus::Open,
-            'waiting_list_entry_id' => $data['waiting_list_entry_id'] ?? null,
-            'origin_cashier_shift_id' => $shift->id,
-            'origin_staff_id' => $staff->id,
-            'origin_staff_name' => $staff->name,
-        ]);
-
-        OpenBillInvolvedStaff::create([
-            'open_bill_id' => $bill->id,
-            'staff_id' => $staff->id,
-            'staff_name' => $staff->name,
-        ]);
-
-        // Create dine-in group if table assigned
-        if ($table) {
-            OpenBillGroup::create([
-                'open_bill_id' => $bill->id,
-                'fulfillment_type' => FulfillmentType::DineIn,
-                'table_id' => $table->id,
-                'table_name' => $table->name,
+        $bill = DB::transaction(function () use ($code, $data, $groupPayloads, $shift, $staff) {
+            $bill = OpenBill::create([
+                'code' => $code,
+                'customer_name' => $data['customer_name'] ?? '',
+                'member_id' => $data['member_id'] ?? null,
+                'points_to_redeem' => $data['points_to_redeem'] ?? 0,
+                'status' => OpenBillStatus::Open,
+                'waiting_list_entry_id' => $data['waiting_list_entry_id'] ?? null,
+                'origin_cashier_shift_id' => $shift->id,
+                'origin_staff_id' => $staff->id,
+                'origin_staff_name' => $staff->name,
             ]);
-            $table->update(['active_open_bill_id' => $bill->id]);
-        }
 
-        return response()->json(['data' => $bill->load(['groups.items.menuItem', 'involvedStaff'])], 201);
+            OpenBillInvolvedStaff::create([
+                'open_bill_id' => $bill->id,
+                'staff_id' => $staff->id,
+                'staff_name' => $staff->name,
+            ]);
+
+            foreach ($groupPayloads as $groupPayload) {
+                $table = !empty($groupPayload['table_id'])
+                    ? Table::find($groupPayload['table_id'])
+                    : null;
+
+                $group = OpenBillGroup::create([
+                    'open_bill_id' => $bill->id,
+                    'fulfillment_type' => FulfillmentType::from($groupPayload['fulfillment_type']),
+                    'table_id' => $table?->id,
+                    'table_name' => $table?->name ?? ($groupPayload['table_name'] ?? null),
+                    'subtotal' => 0,
+                ]);
+
+                foreach ($groupPayload['items'] as $itemPayload) {
+                    $menuItem = MenuItem::findOrFail($itemPayload['menu_item_id']);
+                    $quantity = max(1, (int) ($itemPayload['quantity'] ?? 1));
+
+                    OpenBillGroupItem::create([
+                        'open_bill_group_id' => $group->id,
+                        'menu_item_id' => $menuItem->id,
+                        'quantity' => $quantity,
+                        'unit_price' => $menuItem->price,
+                        'added_at' => now(),
+                        'note' => $itemPayload['note'] ?? null,
+                    ]);
+
+                    $this->stockService->deductForMenuItem($menuItem, $quantity);
+                }
+
+                $group->recalculateSubtotal();
+
+                if ($table) {
+                    $table->update(['active_open_bill_id' => $bill->id]);
+                }
+            }
+
+            return $bill;
+        });
+
+        return response()->json(['data' => $bill->load(['groups.items.menuItem', 'involvedStaff', 'member'])], 201);
     }
 
     public function show(OpenBill $openBill)
@@ -165,7 +217,7 @@ class OpenBillController extends Controller
                 'end_time' => now(),
                 'created_at' => $openBill->created_at,
                 'updated_at' => $openBill->updated_at,
-                'draft_label' => 'BELUM LUNAS',
+                'draft_label' => 'UNPAID',
                 'groups' => $openBill->groups
                     ->sortBy(fn (OpenBillGroup $group) => $group->fulfillment_type === FulfillmentType::DineIn ? 0 : 1)
                     ->map(fn (OpenBillGroup $group) => [
@@ -182,6 +234,7 @@ class OpenBillController extends Controller
                             'unit_price' => $item->unit_price,
                             'subtotal' => $item->unit_price * $item->quantity,
                             'added_at' => $item->added_at,
+                            'note' => $item->note,
                         ])->values(),
                     ])->values(),
                 'totals' => [
@@ -199,19 +252,20 @@ class OpenBillController extends Controller
 
     public function update(Request $request, OpenBill $openBill)
     {
+        $tenantId = $request->user()?->tenant_id;
         $data = $request->validate([
             'customer_name' => 'sometimes|string|max:255',
+            'member_id' => ['sometimes', 'nullable', Rule::exists('members', 'id')->where('tenant_id', $tenantId)],
             'points_to_redeem' => 'sometimes|integer|min:0',
         ]);
         $openBill->update($data);
-        return response()->json(['data' => $openBill->fresh()]);
+        return response()->json(['data' => $openBill->fresh()->load('member')]);
     }
 
     public function destroy(OpenBill $openBill)
     {
         $openBill->loadMissing('groups.items.menuItem');
 
-        // Unlink tables
         $tableIds = $openBill->groups()->whereNotNull('table_id')->pluck('table_id');
         if ($tableIds->isNotEmpty()) {
             Table::whereIn('id', $tableIds)->update(['active_open_bill_id' => null]);
@@ -225,12 +279,12 @@ class OpenBillController extends Controller
             }
         }
 
-        $openBill->groups()->each(fn ($g) => $g->items()->delete());
+        $openBill->groups()->each(fn ($group) => $group->items()->delete());
         $openBill->groups()->delete();
         $openBill->involvedStaff()->delete();
         $openBill->delete();
 
-        return response()->json(['message' => 'Open bill dihapus.']);
+        return response()->json(['message' => 'Draft deleted.']);
     }
 
     public function assignTable(Request $request, OpenBill $openBill)
@@ -242,14 +296,12 @@ class OpenBillController extends Controller
         $table = Table::findOrFail($data['table_id']);
         if ($table->active_open_bill_id && $table->active_open_bill_id !== $openBill->id) {
             return response()->json([
-                'message' => 'Meja sudah terhubung dengan open bill lain.',
+                'message' => 'Table is already linked to another draft.',
             ], 422);
         }
 
-        // Find or create dine-in group
         $group = $openBill->groups()->where('fulfillment_type', FulfillmentType::DineIn)->first();
         if ($group) {
-            // Unlink previous table
             if ($group->table_id && $group->table_id !== $table->id) {
                 Table::where('id', $group->table_id)->update(['active_open_bill_id' => null]);
             }
@@ -265,7 +317,7 @@ class OpenBillController extends Controller
 
         $table->update(['active_open_bill_id' => $openBill->id]);
 
-        return response()->json(['data' => $openBill->fresh()->load('groups.items.menuItem')]);
+        return response()->json(['data' => $openBill->fresh()->load('groups.items.menuItem', 'member')]);
     }
 
     public function addItem(Request $request, OpenBill $openBill)
@@ -281,7 +333,6 @@ class OpenBillController extends Controller
         $fulfillmentType = FulfillmentType::from($data['fulfillment_type']);
         $staff = $request->user();
 
-        // Find or create group
         $group = $openBill->groups()->where('fulfillment_type', $fulfillmentType)->first();
         if (!$group) {
             $group = OpenBillGroup::create([
@@ -290,7 +341,6 @@ class OpenBillController extends Controller
             ]);
         }
 
-        // Find or create item in group
         $existing = $group->items()->where('menu_item_id', $menuItem->id)->first();
         if ($existing) {
             $existing->increment('quantity');
@@ -306,13 +356,12 @@ class OpenBillController extends Controller
         $group->recalculateSubtotal();
         $this->stockService->deductForMenuItem($menuItem);
 
-        // Track staff
         OpenBillInvolvedStaff::firstOrCreate(
             ['open_bill_id' => $openBill->id, 'staff_id' => $staff->id],
             ['staff_name' => $staff->name]
         );
 
-        return response()->json(['data' => $openBill->fresh()->load('groups.items.menuItem')]);
+        return response()->json(['data' => $openBill->fresh()->load('groups.items.menuItem', 'member')]);
     }
 
     public function removeItem(Request $request, OpenBill $openBill)
@@ -330,7 +379,7 @@ class OpenBillController extends Controller
         $item?->delete();
         $group?->recalculateSubtotal();
 
-        return response()->json(['data' => $openBill->fresh()->load('groups.items.menuItem')]);
+        return response()->json(['data' => $openBill->fresh()->load('groups.items.menuItem', 'member')]);
     }
 
     public function updateItem(Request $request, OpenBill $openBill)
@@ -346,7 +395,7 @@ class OpenBillController extends Controller
         if ($group) {
             $item = $group->items()->with('menuItem')->where('menu_item_id', $data['menu_item_id'])->first();
             if (!$item) {
-                return response()->json(['message' => 'Item open bill tidak ditemukan.'], 404);
+                return response()->json(['message' => 'Draft item not found.'], 404);
             }
 
             if ($data['quantity'] === 0) {
@@ -371,7 +420,7 @@ class OpenBillController extends Controller
             $group->recalculateSubtotal();
         }
 
-        return response()->json(['data' => $openBill->fresh()->load('groups.items.menuItem')]);
+        return response()->json(['data' => $openBill->fresh()->load('groups.items.menuItem', 'member')]);
     }
 
     public function attachMember(Request $request, OpenBill $openBill)
@@ -401,7 +450,9 @@ class OpenBillController extends Controller
         $shift = $request->input('active_shift');
 
         $order = $this->orderService->checkoutOpenBill(
-            $openBill, $staff, $shift,
+            $openBill,
+            $staff,
+            $shift,
             $data['payment_method_id'] ?? null,
             $data['payment_method_name'] ?? null,
             $data['payment_reference'] ?? null,
@@ -414,7 +465,7 @@ class OpenBillController extends Controller
     {
         $openBill->loadMissing(['groups.items', 'member']);
         $settings = BusinessSettings::first();
-        
+
         $subtotal = 0;
         foreach ($openBill->groups as $group) {
             foreach ($group->items as $item) {
@@ -443,5 +494,47 @@ class OpenBillController extends Controller
         } while (OpenBill::query()->withoutGlobalScopes()->where('code', $code)->exists());
 
         return $code;
+    }
+
+    private function normalizeStoreGroups(array $data): array
+    {
+        $groups = collect($data['groups'] ?? [])
+            ->map(fn (array $group): array => [
+                'fulfillment_type' => $group['fulfillment_type'],
+                'table_id' => $group['table_id'] ?? null,
+                'table_name' => $group['table_name'] ?? null,
+                'items' => collect($group['items'] ?? [])
+                    ->map(fn (array $item): array => [
+                        'menu_item_id' => $item['menu_item_id'],
+                        'quantity' => $item['quantity'] ?? 1,
+                        'note' => $item['note'] ?? null,
+                    ])
+                    ->all(),
+            ])
+            ->all();
+
+        if (!empty($groups)) {
+            return $groups;
+        }
+
+        if (!empty($data['table_id'])) {
+            return [[
+                'fulfillment_type' => 'dine-in',
+                'table_id' => $data['table_id'],
+                'table_name' => null,
+                'items' => [],
+            ]];
+        }
+
+        if (!empty($data['fulfillment_type'])) {
+            return [[
+                'fulfillment_type' => $data['fulfillment_type'],
+                'table_id' => null,
+                'table_name' => null,
+                'items' => [],
+            ]];
+        }
+
+        return [];
     }
 }
