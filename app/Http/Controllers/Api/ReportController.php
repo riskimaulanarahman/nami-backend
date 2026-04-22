@@ -9,6 +9,7 @@ use App\Models\OpenBill;
 use App\Models\Order;
 use App\Models\Table;
 use App\Models\WaitingListEntry;
+use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 
@@ -22,14 +23,66 @@ class ReportController extends Controller
         $waitingCount = WaitingListEntry::where('status', 'waiting')->count();
         $openBillCount = OpenBill::where('status', 'open')->count();
         $lowStockCount = Ingredient::whereColumn('stock', '<=', 'min_stock')->count();
+        $todayStart = Carbon::today();
+        $todayEnd = Carbon::now();
+
+        $todayOrders = Order::query()
+            ->whereIn('status', [OrderStatus::Completed, OrderStatus::Refunded])
+            ->whereBetween('created_at', [$todayStart, $todayEnd])
+            ->orderByDesc('created_at')
+            ->get();
+
+        $todayRevenue = (int) $todayOrders
+            ->where('status', OrderStatus::Completed)
+            ->sum('grand_total');
+        $todayOrdersCount = $todayOrders->count();
+        $avgTransaction = $todayOrdersCount > 0
+            ? (int) round($todayRevenue / $todayOrdersCount)
+            : 0;
+
+        $hourlyRevenue = collect(range(0, 23))
+            ->map(function (int $hour) use ($todayOrders) {
+                $revenue = (int) $todayOrders
+                    ->filter(function (Order $order) use ($hour) {
+                        return (int) optional($order->created_at)->format('G') === $hour
+                            && $order->status === OrderStatus::Completed;
+                    })
+                    ->sum('grand_total');
+
+                return [
+                    'hour' => str_pad((string) $hour, 2, '0', STR_PAD_LEFT),
+                    'revenue' => $revenue,
+                ];
+            })
+            ->values();
+
+        $recentTransactions = $todayOrders
+            ->take(6)
+            ->map(fn (Order $order) => [
+                'id' => $order->id,
+                'code' => $order->id,
+                'table_name' => $order->table_name,
+                'served_by' => $order->served_by,
+                'session_type' => $order->session_type?->value ?? $order->session_type,
+                'status' => $order->status?->value ?? $order->status,
+                'grand_total' => $order->grand_total,
+                'created_at' => $order->created_at,
+            ])
+            ->values();
 
         return response()->json(['data' => [
             'total_revenue' => $totalRevenue,
+            'today_revenue' => $todayRevenue,
+            'today_orders' => $todayOrdersCount,
+            'avg_transaction' => $avgTransaction,
+            'occupied_tables' => $activeSessions,
             'active_sessions_count' => $activeSessions,
             'available_tables' => $availableTables,
             'waiting_count' => $waitingCount,
             'open_bill_count' => $openBillCount,
             'low_stock_count' => $lowStockCount,
+            'recent_transactions' => $recentTransactions,
+            'hourly_revenue' => $hourlyRevenue,
         ]]);
     }
 
@@ -43,7 +96,7 @@ class ReportController extends Controller
             ->where('status', OrderStatus::Refunded);
 
         $this->applyDateRange($salesQuery, $request);
-        $this->applyDateRange($refundedQuery, $request);
+        $this->applyDateRange($refundedQuery, $request, 'refunded_at');
 
         $salesOrders = $salesQuery->get();
         $refundedOrders = $refundedQuery
@@ -78,7 +131,7 @@ class ReportController extends Controller
             ->where('status', OrderStatus::Refunded);
 
         $this->applyDateRange($salesQuery, $request);
-        $this->applyDateRange($refundedQuery, $request);
+        $this->applyDateRange($refundedQuery, $request, 'refunded_at');
 
         $salesOrders = $salesQuery->get();
         $refundedOrders = $refundedQuery
@@ -103,14 +156,14 @@ class ReportController extends Controller
         ]]);
     }
 
-    private function applyDateRange(Builder $query, Request $request): void
+    private function applyDateRange(Builder $query, Request $request, string $column = 'created_at'): void
     {
         if ($request->has('from')) {
-            $query->where('created_at', '>=', $request->from);
+            $query->where($column, '>=', Carbon::parse($request->from)->startOfDay());
         }
 
         if ($request->has('to')) {
-            $query->where('created_at', '<=', $request->to);
+            $query->where($column, '<=', Carbon::parse($request->to)->endOfDay());
         }
     }
 

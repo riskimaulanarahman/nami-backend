@@ -3,8 +3,11 @@
 namespace Tests\Feature;
 
 use App\Models\MenuCategory;
+use App\Models\Ingredient;
 use App\Models\MenuItem;
+use App\Models\MenuItemRecipe;
 use App\Models\OpenBill;
+use App\Models\Order;
 use App\Models\PaymentOption;
 use App\Models\Staff;
 use App\Models\Table;
@@ -37,6 +40,19 @@ class PosFlowTest extends TestCase
         ]);
 
         return [$tenant, $admin];
+    }
+
+    private function createCashier(Tenant $tenant, string $name, string $pin): Staff
+    {
+        return Staff::create([
+            'tenant_id' => $tenant->id,
+            'name' => $name,
+            'username' => strtolower(str_replace(' ', '-', $name)),
+            'pin' => $pin,
+            'role' => 'kasir',
+            'avatar' => 'CS',
+            'is_active' => true,
+        ]);
     }
 
     private function loginAsStaff(Tenant $tenant, Staff $staff, string $tenantPassword, string $pin): string
@@ -454,5 +470,647 @@ class PosFlowTest extends TestCase
             ->assertJsonPath('data.refund_count', 1)
             ->assertJsonPath('data.net_revenue', 0)
             ->assertJsonPath('data.recent_refunds.0.refund_reason', $fnbReason);
+    }
+
+    public function test_dashboard_report_returns_mobile_parity_metrics(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Dashboard', 'dashboard@example.com', 'password123', '1111');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1111');
+
+        Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Table Dash',
+            'type' => 'standard',
+            'hourly_rate' => 25000,
+            'status' => 'occupied',
+        ]);
+
+        Order::create([
+            'tenant_id' => $tenant->id,
+            'table_id' => null,
+            'table_name' => 'Walk In',
+            'table_type' => 'standard',
+            'session_type' => 'cafe',
+            'bill_type' => 'open-bill',
+            'start_time' => now()->subMinutes(20),
+            'end_time' => now(),
+            'duration_minutes' => 20,
+            'session_duration_hours' => 0,
+            'rental_cost' => 0,
+            'order_total' => 42000,
+            'grand_total' => 42000,
+            'order_cost' => 16000,
+            'served_by' => $admin->name,
+            'status' => 'completed',
+            'created_at' => now()->subMinutes(10),
+        ]);
+
+        $response = $this->getJson('/api/reports/dashboard', [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $response
+            ->assertJsonPath('data.today_revenue', 42000)
+            ->assertJsonPath('data.today_orders', 1)
+            ->assertJsonPath('data.avg_transaction', 42000)
+            ->assertJsonPath('data.occupied_tables', 1);
+
+        $this->assertNotEmpty($response->json('data.hourly_revenue'));
+        $this->assertNotEmpty($response->json('data.recent_transactions'));
+    }
+
+    public function test_orders_endpoint_supports_filter_and_per_page_for_mobile_history(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Orders', 'orders@example.com', 'password123', '2222');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2222');
+
+        Order::create([
+            'tenant_id' => $tenant->id,
+            'table_id' => null,
+            'table_name' => 'Bill A',
+            'table_type' => 'standard',
+            'session_type' => 'billiard',
+            'bill_type' => 'open-bill',
+            'start_time' => now()->subHour(),
+            'end_time' => now(),
+            'duration_minutes' => 60,
+            'session_duration_hours' => 1,
+            'rental_cost' => 30000,
+            'order_total' => 20000,
+            'grand_total' => 50000,
+            'order_cost' => 15000,
+            'served_by' => $admin->name,
+            'status' => 'completed',
+            'created_at' => now()->subMinutes(30),
+        ]);
+
+        Order::create([
+            'tenant_id' => $tenant->id,
+            'table_id' => null,
+            'table_name' => 'Bill B',
+            'table_type' => 'standard',
+            'session_type' => 'cafe',
+            'bill_type' => 'open-bill',
+            'start_time' => now()->subHours(2),
+            'end_time' => now()->subHour(),
+            'duration_minutes' => 30,
+            'session_duration_hours' => 0,
+            'rental_cost' => 0,
+            'order_total' => 18000,
+            'grand_total' => 18000,
+            'order_cost' => 6000,
+            'served_by' => $admin->name,
+            'status' => 'refunded',
+            'refund_reason' => 'Double charge',
+            'refunded_by' => $admin->name,
+            'refunded_at' => now()->subMinutes(20),
+            'created_at' => now()->subMinutes(40),
+        ]);
+
+        $response = $this->getJson('/api/orders?status=completed&session_type=billiard&per_page=1', [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $response
+            ->assertJsonPath('meta.per_page', 1)
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.session_type', 'billiard')
+            ->assertJsonPath('data.0.status', 'completed');
+    }
+
+    public function test_non_admin_refund_requires_server_side_authorization(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Approval', 'approval@example.com', 'password123', '9999');
+        $cashier = $this->createCashier($tenant, 'Cashier Approval', '123456');
+        $staffToken = $this->loginAsStaff($tenant, $cashier, 'password123', '123456');
+
+        $payment = PaymentOption::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Cash',
+            'type' => 'cash',
+            'is_active' => true,
+        ]);
+
+        $this->postJson('/api/cashier-shifts/open', [
+            'opening_cash' => 50000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $order = Order::create([
+            'tenant_id' => $tenant->id,
+            'table_name' => 'Meja 10',
+            'table_type' => 'standard',
+            'session_type' => 'cafe',
+            'bill_type' => 'dine-in',
+            'start_time' => now()->subMinutes(15),
+            'end_time' => now(),
+            'served_by' => $cashier->name,
+            'status' => 'completed',
+            'order_total' => 45000,
+            'grand_total' => 45000,
+            'payment_method_id' => $payment->id,
+            'payment_method_name' => 'Cash',
+            'payment_method_type' => 'cash',
+        ]);
+
+        $this->postJson("/api/orders/{$order->id}/refund", [
+            'reason' => 'Kasir coba refund langsung',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422)
+            ->assertJsonValidationErrors(['authorization']);
+
+        $this->postJson("/api/orders/{$order->id}/refund", [
+            'reason' => 'PIN admin valid',
+            'admin_pin' => '9999',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.refund_authorization_method', 'admin-pin')
+            ->assertJsonPath('data.refund_authorized_by', $admin->name)
+            ->assertJsonPath('data.refund_authorized_role', 'admin');
+    }
+
+    public function test_owner_credentials_can_authorize_refund_for_non_admin_staff(): void
+    {
+        [$tenant] = $this->createTenantWithAdmin('Tenant Owner Refund', 'owner-refund@example.com', 'password123', '2222');
+        $cashier = $this->createCashier($tenant, 'Cashier Owner', '333333');
+        $staffToken = $this->loginAsStaff($tenant, $cashier, 'password123', '333333');
+
+        $payment = PaymentOption::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Cash',
+            'type' => 'cash',
+            'is_active' => true,
+        ]);
+
+        $this->postJson('/api/cashier-shifts/open', [
+            'opening_cash' => 50000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $order = Order::create([
+            'tenant_id' => $tenant->id,
+            'table_name' => 'Walk In',
+            'table_type' => 'standard',
+            'session_type' => 'cafe',
+            'bill_type' => 'takeaway',
+            'start_time' => now()->subMinutes(10),
+            'end_time' => now(),
+            'served_by' => $cashier->name,
+            'status' => 'completed',
+            'order_total' => 30000,
+            'grand_total' => 30000,
+            'payment_method_id' => $payment->id,
+            'payment_method_name' => 'Cash',
+            'payment_method_type' => 'cash',
+        ]);
+
+        $this->postJson("/api/orders/{$order->id}/refund", [
+            'reason' => 'Owner setuju refund',
+            'owner_email' => $tenant->email,
+            'owner_password' => 'password123',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.refund_authorization_method', 'owner-credentials')
+            ->assertJsonPath('data.refund_authorized_by', $tenant->name)
+            ->assertJsonPath('data.refund_authorized_role', 'owner')
+            ->assertJsonPath('data.refund_owner_email', $tenant->email);
+    }
+
+    public function test_stock_is_restored_when_table_and_open_bill_items_are_reduced_removed_or_deleted(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Stock Guard', 'stock@example.com', 'password123', '4444');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '4444');
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Meja Stok',
+            'type' => 'standard',
+            'hourly_rate' => 20000,
+        ]);
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Snack',
+            'emoji' => '🍟',
+        ]);
+
+        $ingredient = Ingredient::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Kentang',
+            'unit' => 'gram',
+            'stock' => 10,
+            'min_stock' => 1,
+            'unit_cost' => 1000,
+        ]);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'French Fries',
+            'category_id' => $category->id,
+            'legacy_category' => 'food',
+            'price' => 15000,
+            'cost' => 5000,
+            'is_available' => true,
+        ]);
+
+        MenuItemRecipe::create([
+            'tenant_id' => $tenant->id,
+            'menu_item_id' => $menuItem->id,
+            'ingredient_id' => $ingredient->id,
+            'quantity' => 2,
+        ]);
+
+        $this->postJson('/api/cashier-shifts/open', [
+            'opening_cash' => 100000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $this->postJson("/api/tables/{$table->id}/start-session", [
+            'session_type' => 'billiard',
+            'billing_mode' => 'open-bill',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $this->postJson("/api/tables/{$table->id}/add-order", [
+            'menu_item_id' => $menuItem->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+        $this->assertSame(8.0, $ingredient->fresh()->stock);
+
+        $this->putJson("/api/tables/{$table->id}/update-order/{$menuItem->id}", [
+            'quantity' => 3,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+        $this->assertSame(4.0, $ingredient->fresh()->stock);
+
+        $this->putJson("/api/tables/{$table->id}/update-order/{$menuItem->id}", [
+            'quantity' => 1,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+        $this->assertSame(8.0, $ingredient->fresh()->stock);
+
+        $this->deleteJson("/api/tables/{$table->id}/remove-order/{$menuItem->id}", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+        $this->assertSame(10.0, $ingredient->fresh()->stock);
+
+        $createBill = $this->postJson('/api/open-bills', [
+            'table_id' => $table->id,
+            'customer_name' => 'Stok Bill',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $openBillId = $createBill->json('data.id');
+
+        $this->postJson("/api/open-bills/{$openBillId}/add-item", [
+            'fulfillment_type' => 'dine-in',
+            'menu_item_id' => $menuItem->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+        $this->assertSame(8.0, $ingredient->fresh()->stock);
+
+        $this->putJson("/api/open-bills/{$openBillId}", [
+            'points_to_redeem' => 0,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $this->putJson("/api/open-bills/{$openBillId}/update-item", [
+            'fulfillment_type' => 'dine-in',
+            'menu_item_id' => $menuItem->id,
+            'quantity' => 3,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+        $this->assertSame(4.0, $ingredient->fresh()->stock);
+
+        $this->putJson("/api/open-bills/{$openBillId}/update-item", [
+            'fulfillment_type' => 'dine-in',
+            'menu_item_id' => $menuItem->id,
+            'quantity' => 1,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+        $this->assertSame(8.0, $ingredient->fresh()->stock);
+
+        $this->deleteJson("/api/open-bills/{$openBillId}/remove-item", [
+            'fulfillment_type' => 'dine-in',
+            'menu_item_id' => $menuItem->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+        $this->assertSame(10.0, $ingredient->fresh()->stock);
+
+        $this->postJson("/api/open-bills/{$openBillId}/add-item", [
+            'fulfillment_type' => 'dine-in',
+            'menu_item_id' => $menuItem->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+        $this->assertSame(8.0, $ingredient->fresh()->stock);
+
+        $this->deleteJson("/api/open-bills/{$openBillId}", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+        $this->assertSame(10.0, $ingredient->fresh()->stock);
+    }
+
+    public function test_reports_use_refunded_at_and_orders_index_uses_end_of_day_searchable_filters(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Filter Guard', 'filter@example.com', 'password123', '4545');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '4545');
+
+        $payment = PaymentOption::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'QRIS',
+            'type' => 'qris',
+            'is_active' => true,
+            'requires_reference' => true,
+        ]);
+
+        $this->postJson('/api/cashier-shifts/open', [
+            'opening_cash' => 100000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $order = Order::create([
+            'tenant_id' => $tenant->id,
+            'table_name' => 'Meja Filter',
+            'table_type' => 'standard',
+            'session_type' => 'cafe',
+            'bill_type' => 'dine-in',
+            'start_time' => now()->subDay()->subMinutes(15),
+            'end_time' => now()->subDay(),
+            'served_by' => $admin->name,
+            'status' => 'completed',
+            'order_total' => 45000,
+            'grand_total' => 45000,
+            'payment_method_id' => $payment->id,
+            'payment_method_name' => 'QRIS',
+            'payment_method_type' => 'non-cash',
+            'payment_reference' => 'REF-END-OF-DAY',
+            'created_at' => now()->subDay()->setTime(23, 30),
+            'updated_at' => now()->subDay()->setTime(23, 30),
+        ]);
+
+        $this->postJson("/api/orders/{$order->id}/refund", [
+            'reason' => 'Refund hari ini',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $today = now()->toDateString();
+
+        $this->getJson("/api/reports/fnb?from={$today}&to={$today}", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.refund_count', 1)
+            ->assertJsonPath('data.recent_refunds.0.id', $order->id);
+
+        $lateOrder = Order::create([
+            'tenant_id' => $tenant->id,
+            'table_name' => 'Meja Malam',
+            'table_type' => 'standard',
+            'session_type' => 'cafe',
+            'bill_type' => 'takeaway',
+            'start_time' => now()->setTime(21, 0),
+            'end_time' => now()->setTime(21, 30),
+            'served_by' => $admin->name,
+            'status' => 'completed',
+            'order_total' => 55000,
+            'grand_total' => 55000,
+            'payment_method_id' => $payment->id,
+            'payment_method_name' => 'QRIS',
+            'payment_method_type' => 'non-cash',
+            'payment_reference' => 'REF-LATE-ORDER',
+            'created_at' => now()->setTime(21, 15),
+            'updated_at' => now()->setTime(21, 15),
+        ]);
+
+        $this->getJson("/api/orders?to={$today}&search=REF-LATE-ORDER", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $lateOrder->id);
+    }
+
+    public function test_open_bill_creation_blocks_table_conflicts_and_generates_non_reused_codes(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Bill Code', 'billcode@example.com', 'password123', '5656');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '5656');
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Meja Konflik',
+            'type' => 'standard',
+            'hourly_rate' => 20000,
+        ]);
+
+        $this->postJson('/api/cashier-shifts/open', [
+            'opening_cash' => 100000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $first = $this->postJson('/api/open-bills', [
+            'table_id' => $table->id,
+            'customer_name' => 'Pertama',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $this->postJson('/api/open-bills', [
+            'table_id' => $table->id,
+            'customer_name' => 'Kedua',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422);
+
+        $this->assertSame(1, OpenBill::count());
+
+        $firstId = $first->json('data.id');
+        $firstCode = $first->json('data.code');
+
+        $this->deleteJson("/api/open-bills/{$firstId}", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $second = $this->postJson('/api/open-bills', [
+            'customer_name' => 'Ketiga',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $this->assertNotSame($firstCode, $second->json('data.code'));
+    }
+
+    public function test_member_code_generation_and_validation_related_endpoints_are_guarded(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Guard More', 'guardmore@example.com', 'password123', '7878');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '7878');
+
+        $this->postJson('/api/cashier-shifts/open', [
+            'opening_cash' => 100000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $memberA = $this->postJson('/api/members', [
+            'name' => 'Member A',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $codeA = $memberA->json('data.code');
+        $this->assertNotEmpty($codeA);
+
+        $this->deleteJson('/api/members/' . $memberA->json('data.id'), [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $memberB = $this->postJson('/api/members', [
+            'name' => 'Member B',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $this->assertNotSame($codeA, $memberB->json('data.code'));
+
+        $ingredient = $this->postJson('/api/ingredients', [
+            'name' => 'Teh Bubuk',
+            'unit' => 'invalid-unit',
+            'stock' => 10,
+            'min_stock' => 1,
+            'unit_cost' => 1000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ]);
+        $ingredient->assertStatus(422);
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Meja WL',
+            'type' => 'standard',
+            'hourly_rate' => 10000,
+        ]);
+
+        $entry = $this->postJson('/api/waiting-list', [
+            'customer_name' => 'Budi',
+            'party_size' => 2,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $entryId = $entry->json('data.id');
+
+        $this->postJson("/api/waiting-list/{$entryId}/seat", [
+            'table_id' => $table->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $this->postJson("/api/waiting-list/{$entryId}/seat", [
+            'table_id' => $table->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422);
+
+        $this->putJson('/api/table-layout/999999', [
+            'x_percent' => 150,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422);
+    }
+
+    public function test_payment_option_crud_supports_flutter_admin_and_checkout_contracts(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Payment Guard', 'payguard@example.com', 'password123', '8989');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '8989');
+
+        $group = $this->postJson('/api/payment-options', [
+            'name' => 'Non Cash',
+            'type' => 'transfer',
+            'is_group' => true,
+            'is_active' => true,
+            'sort_order' => 10,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $groupId = $group->json('data.id');
+
+        $cash = $this->postJson('/api/payment-options', [
+            'name' => 'Cash',
+            'type' => 'cash',
+            'is_active' => true,
+            'sort_order' => 1,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $child = $this->postJson('/api/payment-options', [
+            'name' => 'QRIS Dynamic',
+            'type' => 'qris',
+            'is_active' => true,
+            'requires_reference' => true,
+            'reference_label' => 'RRN',
+            'parent_id' => $groupId,
+            'sort_order' => 2,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $childId = $child->json('data.id');
+
+        $this->getJson('/api/payment-options', [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.0.name', 'Cash')
+            ->assertJsonPath('data.1.id', $groupId)
+            ->assertJsonPath('data.1.children.0.id', $childId)
+            ->assertJsonPath('data.1.children.0.requires_reference', true)
+            ->assertJsonPath('data.1.children.0.reference_label', 'RRN');
+
+        $this->putJson("/api/payment-options/{$childId}", [
+            'name' => 'QRIS Static',
+            'reference_label' => 'Reference ID',
+            'sort_order' => 5,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.name', 'QRIS Static')
+            ->assertJsonPath('data.reference_label', 'Reference ID')
+            ->assertJsonPath('data.sort_order', 5);
+
+        $this->putJson("/api/payment-options/{$childId}", [
+            'requires_reference' => true,
+            'reference_label' => '',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422)
+            ->assertJsonValidationErrors(['reference_label']);
+
+        $cashId = $cash->json('data.id');
+        $this->deleteJson("/api/payment-options/{$cashId}", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $this->getJson('/api/payment-options', [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonMissing(['id' => $cashId]);
     }
 }

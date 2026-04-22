@@ -28,6 +28,8 @@ class Order extends Model
         'selected_package_id', 'selected_package_name', 'selected_package_hours',
         'selected_package_price', 'order_total', 'grand_total', 'order_cost',
         'served_by', 'status', 'refunded_at', 'refunded_by', 'refund_reason',
+        'refund_authorization_method', 'refund_authorized_by',
+        'refund_authorized_role', 'refund_owner_email',
         'payment_method_id', 'payment_method_name', 'payment_method_type',
         'payment_reference', 'cashier_shift_id', 'refunded_in_cashier_shift_id',
         'origin_cashier_shift_id', 'origin_staff_id', 'origin_staff_name',

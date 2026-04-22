@@ -48,6 +48,10 @@ class WaitingListController extends Controller
 
     public function seat(Request $request, WaitingListEntry $waitingListEntry)
     {
+        if ($waitingListEntry->status !== WaitingListStatus::Waiting) {
+            return response()->json(['message' => 'Waiting list entry tidak lagi menunggu.'], 422);
+        }
+
         $tenantId = $request->user()?->tenant_id;
         $data = $request->validate([
             'table_id' => ['required', Rule::exists('tables', 'id')->where('tenant_id', $tenantId)],
@@ -70,6 +74,10 @@ class WaitingListController extends Controller
 
     public function cancel(WaitingListEntry $waitingListEntry)
     {
+        if (in_array($waitingListEntry->status, [WaitingListStatus::Cancelled], true)) {
+            return response()->json(['data' => $waitingListEntry]);
+        }
+
         if ($waitingListEntry->table_id) {
             Table::where('id', $waitingListEntry->table_id)
                 ->where('status', TableStatus::Reserved)

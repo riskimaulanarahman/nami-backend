@@ -155,18 +155,38 @@ class TableController extends Controller
 
     public function removeOrder(Request $request, Table $table, string $menuItemId)
     {
-        $table->orderItems()->where('menu_item_id', $menuItemId)->delete();
+        $item = $table->orderItems()->with('menuItem')->where('menu_item_id', $menuItemId)->first();
+        if ($item?->menuItem) {
+            $this->stockService->restockForMenuItem($item->menuItem, $item->quantity);
+        }
+        $item?->delete();
+
         return response()->json(['data' => $table->fresh()->load('orderItems.menuItem')]);
     }
 
     public function updateOrder(Request $request, Table $table, string $menuItemId)
     {
         $data = $request->validate(['quantity' => 'required|integer|min:0']);
+        $item = $table->orderItems()->with('menuItem')->where('menu_item_id', $menuItemId)->first();
+
+        if (!$item) {
+            return response()->json(['message' => 'Item order tidak ditemukan.'], 404);
+        }
 
         if ($data['quantity'] === 0) {
-            $table->orderItems()->where('menu_item_id', $menuItemId)->delete();
+            if ($item->menuItem) {
+                $this->stockService->restockForMenuItem($item->menuItem, $item->quantity);
+            }
+            $item->delete();
         } else {
-            $table->orderItems()->where('menu_item_id', $menuItemId)->update(['quantity' => $data['quantity']]);
+            $delta = $data['quantity'] - $item->quantity;
+            if ($delta > 0 && $item->menuItem) {
+                $this->stockService->deductForMenuItem($item->menuItem, $delta);
+            } elseif ($delta < 0 && $item->menuItem) {
+                $this->stockService->restockForMenuItem($item->menuItem, abs($delta));
+            }
+
+            $item->update(['quantity' => $data['quantity']]);
         }
 
         return response()->json(['data' => $table->fresh()->load('orderItems.menuItem')]);

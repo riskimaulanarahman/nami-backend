@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\TableLayoutPosition;
 use App\Models\Table;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class TableLayoutController extends Controller
 {
@@ -17,11 +18,16 @@ class TableLayoutController extends Controller
 
     public function update(Request $request, int $tableId)
     {
+        $tenantId = $request->user()?->tenant_id;
         $data = $request->validate([
-            'x_percent' => 'sometimes|numeric',
-            'y_percent' => 'sometimes|numeric',
-            'width_percent' => 'sometimes|numeric',
+            'x_percent' => 'sometimes|numeric|min:0|max:100',
+            'y_percent' => 'sometimes|numeric|min:0|max:100',
+            'width_percent' => 'sometimes|numeric|min:1|max:100',
         ]);
+        validator(
+            ['table_id' => $tableId],
+            ['table_id' => ['required', Rule::exists('tables', 'id')->where('tenant_id', $tenantId)]]
+        )->validate();
 
         $position = TableLayoutPosition::updateOrCreate(
             ['table_id' => $tableId],

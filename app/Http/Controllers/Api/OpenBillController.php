@@ -18,6 +18,7 @@ use App\Models\BusinessSettings;
 use App\Http\Resources\TableResource;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Support\Str;
 
 class OpenBillController extends Controller
 {
@@ -48,8 +49,17 @@ class OpenBillController extends Controller
 
         $staff = $request->user();
         $shift = $request->input('active_shift');
-        $billCount = OpenBill::count() + 1;
-        $code = 'OB-' . str_pad($billCount, 3, '0', STR_PAD_LEFT);
+        $code = $this->generateOpenBillCode();
+        $table = null;
+
+        if (!empty($data['table_id'])) {
+            $table = Table::find($data['table_id']);
+            if ($table?->active_open_bill_id) {
+                return response()->json([
+                    'message' => 'Meja sudah terhubung dengan open bill lain.',
+                ], 422);
+            }
+        }
 
         $bill = OpenBill::create([
             'code' => $code,
@@ -68,17 +78,14 @@ class OpenBillController extends Controller
         ]);
 
         // Create dine-in group if table assigned
-        if (!empty($data['table_id'])) {
-            $table = Table::find($data['table_id']);
-            if ($table) {
-                OpenBillGroup::create([
-                    'open_bill_id' => $bill->id,
-                    'fulfillment_type' => FulfillmentType::DineIn,
-                    'table_id' => $table->id,
-                    'table_name' => $table->name,
-                ]);
-                $table->update(['active_open_bill_id' => $bill->id]);
-            }
+        if ($table) {
+            OpenBillGroup::create([
+                'open_bill_id' => $bill->id,
+                'fulfillment_type' => FulfillmentType::DineIn,
+                'table_id' => $table->id,
+                'table_name' => $table->name,
+            ]);
+            $table->update(['active_open_bill_id' => $bill->id]);
         }
 
         return response()->json(['data' => $bill->load(['groups.items.menuItem', 'involvedStaff'])], 201);
@@ -202,10 +209,20 @@ class OpenBillController extends Controller
 
     public function destroy(OpenBill $openBill)
     {
+        $openBill->loadMissing('groups.items.menuItem');
+
         // Unlink tables
         $tableIds = $openBill->groups()->whereNotNull('table_id')->pluck('table_id');
         if ($tableIds->isNotEmpty()) {
             Table::whereIn('id', $tableIds)->update(['active_open_bill_id' => null]);
+        }
+
+        foreach ($openBill->groups as $group) {
+            foreach ($group->items as $item) {
+                if ($item->menuItem) {
+                    $this->stockService->restockForMenuItem($item->menuItem, $item->quantity);
+                }
+            }
         }
 
         $openBill->groups()->each(fn ($g) => $g->items()->delete());
@@ -223,6 +240,11 @@ class OpenBillController extends Controller
             'table_id' => ['required', Rule::exists('tables', 'id')->where('tenant_id', $tenantId)],
         ]);
         $table = Table::findOrFail($data['table_id']);
+        if ($table->active_open_bill_id && $table->active_open_bill_id !== $openBill->id) {
+            return response()->json([
+                'message' => 'Meja sudah terhubung dengan open bill lain.',
+            ], 422);
+        }
 
         // Find or create dine-in group
         $group = $openBill->groups()->where('fulfillment_type', FulfillmentType::DineIn)->first();
@@ -301,7 +323,11 @@ class OpenBillController extends Controller
         ]);
 
         $group = $openBill->groups()->where('fulfillment_type', $data['fulfillment_type'])->first();
-        $group?->items()->where('menu_item_id', $data['menu_item_id'])->delete();
+        $item = $group?->items()->with('menuItem')->where('menu_item_id', $data['menu_item_id'])->first();
+        if ($item?->menuItem) {
+            $this->stockService->restockForMenuItem($item->menuItem, $item->quantity);
+        }
+        $item?->delete();
         $group?->recalculateSubtotal();
 
         return response()->json(['data' => $openBill->fresh()->load('groups.items.menuItem')]);
@@ -318,14 +344,29 @@ class OpenBillController extends Controller
 
         $group = $openBill->groups()->where('fulfillment_type', $data['fulfillment_type'])->first();
         if ($group) {
+            $item = $group->items()->with('menuItem')->where('menu_item_id', $data['menu_item_id'])->first();
+            if (!$item) {
+                return response()->json(['message' => 'Item open bill tidak ditemukan.'], 404);
+            }
+
             if ($data['quantity'] === 0) {
-                $group->items()->where('menu_item_id', $data['menu_item_id'])->delete();
+                if ($item->menuItem) {
+                    $this->stockService->restockForMenuItem($item->menuItem, $item->quantity);
+                }
+                $item->delete();
             } else {
+                $delta = $data['quantity'] - $item->quantity;
+                if ($delta > 0 && $item->menuItem) {
+                    $this->stockService->deductForMenuItem($item->menuItem, $delta);
+                } elseif ($delta < 0 && $item->menuItem) {
+                    $this->stockService->restockForMenuItem($item->menuItem, abs($delta));
+                }
+
                 $update = ['quantity' => $data['quantity']];
                 if (array_key_exists('note', $data)) {
                     $update['note'] = $data['note'] ?: null;
                 }
-                $group->items()->where('menu_item_id', $data['menu_item_id'])->update($update);
+                $item->update($update);
             }
             $group->recalculateSubtotal();
         }
@@ -389,5 +430,18 @@ class OpenBillController extends Controller
         );
 
         return response()->json(['data' => $totals]);
+    }
+
+    private function generateOpenBillCode(): string
+    {
+        do {
+            $code = sprintf(
+                'OB-%s-%s',
+                now()->format('ymdHis'),
+                Str::upper(Str::random(4)),
+            );
+        } while (OpenBill::query()->withoutGlobalScopes()->where('code', $code)->exists());
+
+        return $code;
     }
 }

@@ -2,10 +2,12 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\IngredientUnit;
 use App\Http\Controllers\Controller;
 use App\Models\Ingredient;
 use App\Services\StockService;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class IngredientController extends Controller
 {
@@ -19,7 +21,7 @@ class IngredientController extends Controller
     {
         $data = $request->validate([
             'name' => 'required|string|max:255',
-            'unit' => 'required|string',
+            'unit' => ['required', Rule::in(array_column(IngredientUnit::cases(), 'value'))],
             'stock' => 'numeric|min:0',
             'min_stock' => 'numeric|min:0',
             'unit_cost' => 'integer|min:0',
@@ -36,7 +38,7 @@ class IngredientController extends Controller
     {
         $data = $request->validate([
             'name' => 'sometimes|string|max:255',
-            'unit' => 'sometimes|string',
+            'unit' => ['sometimes', Rule::in(array_column(IngredientUnit::cases(), 'value'))],
             'min_stock' => 'sometimes|numeric|min:0',
             'unit_cost' => 'sometimes|integer|min:0',
         ]);

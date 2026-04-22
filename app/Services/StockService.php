@@ -32,6 +32,24 @@ class StockService
     }
 
     /**
+     * Restore ingredient stock based on menu item recipe.
+     */
+    public function restockForMenuItem(MenuItem $menuItem, int $quantity = 1): void
+    {
+        $menuItem->loadMissing('recipes.ingredient');
+
+        foreach ($menuItem->recipes as $recipe) {
+            $ingredient = $recipe->ingredient;
+            if (!$ingredient) continue;
+
+            $restoreAmount = $recipe->quantity * $quantity;
+            $newStock = round($ingredient->stock + $restoreAmount, 4);
+
+            $ingredient->update(['stock' => $newStock]);
+        }
+    }
+
+    /**
      * Manual stock adjustment.
      */
     public function adjust(

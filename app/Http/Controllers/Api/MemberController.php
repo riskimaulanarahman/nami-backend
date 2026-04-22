@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Member;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Support\Str;
 
 class MemberController extends Controller
 {
@@ -33,8 +34,9 @@ class MemberController extends Controller
         ]);
 
         if (empty($data['code'])) {
-            $data['code'] = 'MBR-' . str_pad(Member::withTrashed()->count() + 1, 3, '0', STR_PAD_LEFT);
+            $data['code'] = $this->generateMemberCode();
         }
+        $data['phone'] = $data['phone'] ?? '';
 
         return response()->json(['data' => Member::create($data)], 201);
     }
@@ -50,6 +52,9 @@ class MemberController extends Controller
             'name' => 'sometimes|string|max:255',
             'phone' => 'nullable|string|max:30',
         ]);
+        if (array_key_exists('phone', $data) && $data['phone'] === null) {
+            $data['phone'] = '';
+        }
         $member->update($data);
         return response()->json(['data' => $member->fresh()]);
     }
@@ -65,5 +70,18 @@ class MemberController extends Controller
         return response()->json([
             'data' => $member->pointLedger()->orderByDesc('created_at')->get(),
         ]);
+    }
+
+    private function generateMemberCode(): string
+    {
+        do {
+            $code = sprintf(
+                'MBR-%s-%s',
+                now()->format('ymd'),
+                Str::upper(Str::random(4)),
+            );
+        } while (Member::query()->withoutGlobalScopes()->withTrashed()->where('code', $code)->exists());
+
+        return $code;
     }
 }

@@ -391,9 +391,15 @@ class OrderService
     /**
      * Refund an order.
      */
-    public function refundOrder(Order $order, Staff $staff, CashierShift $shift, string $reason): Order
+    public function refundOrder(
+        Order $order,
+        Staff $staff,
+        CashierShift $shift,
+        string $reason,
+        array $authorization = [],
+    ): Order
     {
-        return DB::transaction(function () use ($order, $staff, $shift, $reason) {
+        return DB::transaction(function () use ($order, $staff, $shift, $reason, $authorization) {
             if ($order->status === OrderStatus::Refunded) {
                 throw new \RuntimeException('Order ini sudah di-refund.');
             }
@@ -403,6 +409,10 @@ class OrderService
                 'refunded_at' => now(),
                 'refunded_by' => $staff->name,
                 'refund_reason' => $reason,
+                'refund_authorization_method' => $authorization['method'] ?? null,
+                'refund_authorized_by' => $authorization['authorized_by'] ?? null,
+                'refund_authorized_role' => $authorization['authorized_role'] ?? null,
+                'refund_owner_email' => $authorization['owner_email'] ?? null,
                 'refunded_in_cashier_shift_id' => $shift->id,
             ]);
 
