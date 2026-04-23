@@ -85,6 +85,9 @@ class TableController extends Controller
             'selected_package_name' => $package?->name,
             'selected_package_hours' => $package?->duration_hours ?? 0,
             'selected_package_price' => $package?->price ?? 0,
+            'package_minutes_total' => ($package?->duration_hours ?? 0) * 60,
+            'package_total_price' => $package?->price ?? 0,
+            'package_reminder_shown_at' => null,
             'origin_cashier_shift_id' => $shift->id,
             'origin_staff_id' => $staff->id,
             'origin_staff_name' => $staff->name,
@@ -96,6 +99,71 @@ class TableController extends Controller
         );
 
         return new TableResource($table->fresh()->load(['involvedStaff', 'orderItems']));
+    }
+
+    public function acknowledgePackageExpiry(Table $table)
+    {
+        if ($table->status !== TableStatus::Occupied) {
+            return response()->json(['message' => 'Meja tidak sedang aktif.'], 422);
+        }
+
+        $table->update([
+            'package_reminder_shown_at' => now(),
+        ]);
+
+        return new TableResource($table->fresh()->load(['involvedStaff', 'orderItems.menuItem']));
+    }
+
+    public function extendPackage(Request $request, Table $table)
+    {
+        $tenantId = $request->user()?->tenant_id;
+        $data = $request->validate([
+            'package_id' => ['required', Rule::exists('billiard_packages', 'id')->where('tenant_id', $tenantId)],
+        ]);
+
+        if ($table->status !== TableStatus::Occupied) {
+            return response()->json(['message' => 'Meja tidak sedang aktif.'], 422);
+        }
+
+        if ($table->billing_mode?->value !== 'package') {
+            return response()->json(['message' => 'Perpanjangan paket hanya tersedia untuk sesi paket.'], 422);
+        }
+
+        $package = BilliardPackage::findOrFail($data['package_id']);
+        $currentMinutes = $this->billingService->calculatePackageIncludedMinutes($table);
+        $currentPrice = $this->billingService->calculatePackageTotalPrice($table);
+        $nextMinutes = $currentMinutes + ($package->duration_hours * 60);
+        $nextPrice = $currentPrice + $package->price;
+
+        $table->update([
+            'selected_package_id' => $package->id,
+            'selected_package_name' => $package->name,
+            'selected_package_hours' => intdiv($nextMinutes, 60),
+            'selected_package_price' => $nextPrice,
+            'package_minutes_total' => $nextMinutes,
+            'package_total_price' => $nextPrice,
+            'package_reminder_shown_at' => null,
+        ]);
+
+        return new TableResource($table->fresh()->load(['involvedStaff', 'orderItems.menuItem']));
+    }
+
+    public function convertPackageToOpenBill(Table $table)
+    {
+        if ($table->status !== TableStatus::Occupied) {
+            return response()->json(['message' => 'Meja tidak sedang aktif.'], 422);
+        }
+
+        if ($table->billing_mode?->value !== 'package') {
+            return response()->json(['message' => 'Sesi ini tidak memakai paket.'], 422);
+        }
+
+        $table->update([
+            'billing_mode' => 'open-bill',
+            'package_reminder_shown_at' => null,
+        ]);
+
+        return new TableResource($table->fresh()->load(['involvedStaff', 'orderItems.menuItem']));
     }
 
     public function endSession(Request $request, Table $table)

@@ -99,6 +99,8 @@ class OrderService
             $paymentType = $this->resolvePaymentMethodType($paymentMethodId);
             $cashPayment = $this->resolveCashPayment($paymentType, $bill['grand_total'], $cashReceived);
             $now = now();
+            $packageIncludedMinutes = $this->billingService->calculatePackageIncludedMinutes($table);
+            $packageTotalPrice = $this->billingService->calculatePackageTotalPrice($table);
 
             $involvedStaffIds = $table->involvedStaff->pluck('staff_id')->push($staff->id)->unique()->values()->toArray();
             $involvedStaffNames = $table->involvedStaff->pluck('staff_name')->push($staff->name)->unique()->values()->toArray();
@@ -114,12 +116,12 @@ class OrderService
                 'start_time' => $table->start_time ?? $now,
                 'end_time' => $now,
                 'duration_minutes' => $bill['duration_minutes'],
-                'session_duration_hours' => $table->selected_package_hours,
+                'session_duration_hours' => intdiv($packageIncludedMinutes, 60),
                 'rental_cost' => $bill['rental_cost'],
                 'selected_package_id' => $table->selected_package_id,
                 'selected_package_name' => $table->selected_package_name,
-                'selected_package_hours' => $table->selected_package_hours,
-                'selected_package_price' => $table->selected_package_price,
+                'selected_package_hours' => intdiv($packageIncludedMinutes, 60),
+                'selected_package_price' => $packageTotalPrice,
                 'order_total' => $bill['order_total'],
                 'grand_total' => $bill['grand_total'],
                 'order_cost' => $bill['order_cost'],

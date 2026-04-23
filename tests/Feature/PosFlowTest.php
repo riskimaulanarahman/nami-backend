@@ -7,6 +7,7 @@ use App\Models\Ingredient;
 use App\Models\MenuItem;
 use App\Models\MenuItemRecipe;
 use App\Models\Member;
+use App\Models\BilliardPackage;
 use App\Models\OpenBill;
 use App\Models\Order;
 use App\Models\PaymentOption;
@@ -1288,5 +1289,203 @@ class PosFlowTest extends TestCase
             'Authorization' => "Bearer {$staffToken}",
         ])->assertOk()
             ->assertJsonMissing(['id' => $cashId]);
+    }
+
+    public function test_package_bill_exposes_remaining_minutes_and_expiry_state(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Package', 'package@example.com', 'password123', '1212');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1212');
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Table Package',
+            'type' => 'standard',
+            'hourly_rate' => 20000,
+        ]);
+
+        $package = BilliardPackage::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Paket 2 Jam',
+            'duration_hours' => 2,
+            'price' => 50000,
+            'is_active' => true,
+            'sort_order' => 1,
+        ]);
+
+        $this->postJson('/api/cashier-shifts/open', [
+            'opening_cash' => 100000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $this->postJson("/api/tables/{$table->id}/start-session", [
+            'session_type' => 'billiard',
+            'billing_mode' => 'package',
+            'package_id' => $package->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $table->refresh();
+        $table->forceFill([
+            'start_time' => now()->subMinutes(30),
+        ])->save();
+
+        $this->getJson("/api/tables/{$table->id}", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.package_included_minutes_total', 120)
+            ->assertJsonPath('data.remaining_package_minutes', 90)
+            ->assertJsonPath('data.is_package_expired', false)
+            ->assertJsonPath('data.is_in_grace_period', false)
+            ->assertJsonPath('data.package_total_price', 50000);
+
+        $this->getJson("/api/tables/{$table->id}/bill", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.package_included_minutes_total', 120)
+            ->assertJsonPath('data.remaining_package_minutes', 90)
+            ->assertJsonPath('data.rental_cost', 50000)
+            ->assertJsonPath('data.is_package_expired', false);
+    }
+
+    public function test_extend_package_accumulates_minutes_and_price_and_resets_reminder(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Extend', 'extend@example.com', 'password123', '2323');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2323');
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Table Extend',
+            'type' => 'standard',
+            'hourly_rate' => 20000,
+        ]);
+
+        $firstPackage = BilliardPackage::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Paket 1 Jam',
+            'duration_hours' => 1,
+            'price' => 30000,
+            'is_active' => true,
+            'sort_order' => 1,
+        ]);
+
+        $secondPackage = BilliardPackage::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Paket 2 Jam',
+            'duration_hours' => 2,
+            'price' => 45000,
+            'is_active' => true,
+            'sort_order' => 2,
+        ]);
+
+        $this->postJson('/api/cashier-shifts/open', [
+            'opening_cash' => 100000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $this->postJson("/api/tables/{$table->id}/start-session", [
+            'session_type' => 'billiard',
+            'billing_mode' => 'package',
+            'package_id' => $firstPackage->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $table->refresh();
+        $table->update([
+            'package_reminder_shown_at' => now(),
+        ]);
+
+        $this->postJson("/api/tables/{$table->id}/extend-package", [
+            'package_id' => $secondPackage->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.selected_package.hours', 3)
+            ->assertJsonPath('data.selected_package.price', 75000)
+            ->assertJsonPath('data.package_included_minutes_total', 180)
+            ->assertJsonPath('data.package_total_price', 75000)
+            ->assertJsonPath('data.package_reminder_shown_at', null);
+    }
+
+    public function test_convert_package_to_open_bill_charges_only_overrun_after_package_end(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Convert', 'convert@example.com', 'password123', '3434');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '3434');
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Table Convert',
+            'type' => 'standard',
+            'hourly_rate' => 20000,
+        ]);
+
+        $package = BilliardPackage::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Paket 1 Jam',
+            'duration_hours' => 1,
+            'price' => 30000,
+            'is_active' => true,
+            'sort_order' => 1,
+        ]);
+
+        $payment = PaymentOption::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Cash',
+            'type' => 'cash',
+            'is_active' => true,
+        ]);
+
+        $this->postJson('/api/cashier-shifts/open', [
+            'opening_cash' => 100000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $this->postJson("/api/tables/{$table->id}/start-session", [
+            'session_type' => 'billiard',
+            'billing_mode' => 'package',
+            'package_id' => $package->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $table->refresh();
+        $table->forceFill([
+            'start_time' => now()->subMinutes(90),
+        ])->save();
+
+        $this->postJson("/api/tables/{$table->id}/package-expiry/acknowledge", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.is_package_expired', true);
+
+        $this->postJson("/api/tables/{$table->id}/convert-to-open-bill", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.billing_mode', 'open-bill');
+
+        $this->getJson("/api/tables/{$table->id}/bill", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.package_included_minutes_total', 60)
+            ->assertJsonPath('data.remaining_package_minutes', -30)
+            ->assertJsonPath('data.overrun_package_minutes', 30)
+            ->assertJsonPath('data.rental_cost', 50000);
+
+        $this->postJson("/api/tables/{$table->id}/checkout", [
+            'payment_method_id' => $payment->id,
+            'payment_method_name' => 'Cash',
+            'cash_received' => 60000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.billiard_billing_mode', 'open-bill')
+            ->assertJsonPath('data.selected_package_hours', 1)
+            ->assertJsonPath('data.selected_package_price', 30000)
+            ->assertJsonPath('data.rental_cost', 50000)
+            ->assertJsonPath('data.duration_minutes', 90);
     }
 }

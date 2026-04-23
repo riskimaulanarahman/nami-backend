@@ -95,6 +95,9 @@ Route::middleware(['auth:sanctum', 'tenant.context', 'staff.token'])->group(func
     Route::middleware(\App\Http\Middleware\EnsureActiveShift::class)->group(function () {
         // Table session operations
         Route::post('/tables/{table}/start-session', [TableController::class, 'startSession']);
+        Route::post('/tables/{table}/package-expiry/acknowledge', [TableController::class, 'acknowledgePackageExpiry']);
+        Route::post('/tables/{table}/extend-package', [TableController::class, 'extendPackage']);
+        Route::post('/tables/{table}/convert-to-open-bill', [TableController::class, 'convertPackageToOpenBill']);
         Route::post('/tables/{table}/end-session', [TableController::class, 'endSession']);
         Route::post('/tables/{table}/checkout', [TableController::class, 'checkout']);
         Route::post('/tables/{table}/add-order', [TableController::class, 'addOrder']);

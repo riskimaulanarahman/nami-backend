@@ -20,6 +20,7 @@ class Table extends Model
         'name', 'type', 'status', 'hourly_rate', 'start_time', 'session_type',
         'billing_mode', 'active_open_bill_id', 'selected_package_id',
         'selected_package_name', 'selected_package_hours', 'selected_package_price',
+        'package_minutes_total', 'package_total_price',
         'package_reminder_shown_at', 'origin_cashier_shift_id', 'origin_staff_id',
         'origin_staff_name',
     ];
@@ -34,6 +35,8 @@ class Table extends Model
             'hourly_rate' => 'integer',
             'selected_package_hours' => 'integer',
             'selected_package_price' => 'integer',
+            'package_minutes_total' => 'integer',
+            'package_total_price' => 'integer',
             'start_time' => 'datetime',
             'package_reminder_shown_at' => 'datetime',
         ];
@@ -71,6 +74,8 @@ class Table extends Model
             'selected_package_name' => null,
             'selected_package_hours' => 0,
             'selected_package_price' => 0,
+            'package_minutes_total' => 0,
+            'package_total_price' => 0,
             'package_reminder_shown_at' => null,
             'origin_cashier_shift_id' => null,
             'origin_staff_id' => null,
