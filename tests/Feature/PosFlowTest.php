@@ -174,15 +174,19 @@ class PosFlowTest extends TestCase
         $checkout = $this->postJson("/api/tables/{$table->id}/checkout", [
             'payment_method_id' => $payment->id,
             'payment_method_name' => 'Cash',
+            'cash_received' => 50000,
         ], [
             'Authorization' => "Bearer {$staffToken}",
         ])->assertOk();
 
         $checkout
             ->assertJsonPath('data.status', 'completed')
-            ->assertJsonPath('data.payment_method_id', $payment->id);
+            ->assertJsonPath('data.payment_method_id', $payment->id)
+            ->assertJsonPath('data.cash_received', 50000);
 
-        $this->assertGreaterThanOrEqual(10000, (int) $checkout->json('data.grand_total'));
+        $grandTotal = (int) $checkout->json('data.grand_total');
+        $this->assertGreaterThanOrEqual(10000, $grandTotal);
+        $this->assertSame(50000 - $grandTotal, (int) $checkout->json('data.change_amount'));
 
         // 5. Verify transaction is attached to active shift
         $transactions = $this->getJson("/api/cashier-shifts/{$shiftId}/transactions", [
@@ -264,6 +268,156 @@ class PosFlowTest extends TestCase
         $checkout
             ->assertJsonPath('data.status', 'completed')
             ->assertJsonPath('data.duration_minutes', 0);
+
+        $grandTotal = (int) $checkout->json('data.grand_total');
+        $this->assertSame($grandTotal, (int) $checkout->json('data.cash_received'));
+        $this->assertSame(0, (int) $checkout->json('data.change_amount'));
+    }
+
+    public function test_open_bill_cash_checkout_rejects_cash_received_below_total(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Cash Guard', 'cash-guard@example.com', 'password123', '6789');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '6789');
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Meja Cash',
+            'type' => 'standard',
+            'hourly_rate' => 20000,
+        ]);
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Drink',
+            'emoji' => '🥤',
+        ]);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Lemon Tea',
+            'category_id' => $category->id,
+            'legacy_category' => 'drink',
+            'price' => 15000,
+            'cost' => 4000,
+            'is_available' => true,
+        ]);
+
+        $payment = PaymentOption::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Cash',
+            'type' => 'cash',
+            'is_active' => true,
+        ]);
+
+        $this->postJson('/api/cashier-shifts/open', [
+            'opening_cash' => 100000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $createBill = $this->postJson('/api/open-bills', [
+            'table_id' => $table->id,
+            'customer_name' => 'Cash Guard',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $openBillId = $createBill->json('data.id');
+
+        $this->postJson("/api/open-bills/{$openBillId}/add-item", [
+            'fulfillment_type' => 'dine-in',
+            'menu_item_id' => $menuItem->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $this->postJson("/api/open-bills/{$openBillId}/checkout", [
+            'payment_method_id' => $payment->id,
+            'payment_method_name' => 'Cash',
+            'cash_received' => 10000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422)
+            ->assertJsonPath('message', 'Nominal pembayaran kurang dari total.');
+    }
+
+    public function test_open_bill_non_cash_checkout_keeps_cash_fields_null_and_orders_index_exposes_them(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant QRIS', 'qris@example.com', 'password123', '7890');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '7890');
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Meja QRIS',
+            'type' => 'standard',
+            'hourly_rate' => 20000,
+        ]);
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Drink',
+            'emoji' => '🥤',
+        ]);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Es Jeruk',
+            'category_id' => $category->id,
+            'legacy_category' => 'drink',
+            'price' => 18000,
+            'cost' => 5000,
+            'is_available' => true,
+        ]);
+
+        $payment = PaymentOption::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'QRIS',
+            'type' => 'qris',
+            'is_active' => true,
+            'requires_reference' => true,
+        ]);
+
+        $this->postJson('/api/cashier-shifts/open', [
+            'opening_cash' => 100000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $createBill = $this->postJson('/api/open-bills', [
+            'table_id' => $table->id,
+            'customer_name' => 'QRIS Guest',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $openBillId = $createBill->json('data.id');
+
+        $this->postJson("/api/open-bills/{$openBillId}/add-item", [
+            'fulfillment_type' => 'dine-in',
+            'menu_item_id' => $menuItem->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $checkout = $this->postJson("/api/open-bills/{$openBillId}/checkout", [
+            'payment_method_id' => $payment->id,
+            'payment_method_name' => 'QRIS',
+            'payment_reference' => 'REF-QRIS-001',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $checkout
+            ->assertJsonPath('data.payment_method_name', 'QRIS')
+            ->assertJsonPath('data.cash_received', null)
+            ->assertJsonPath('data.change_amount', null);
+
+        $this->getJson('/api/orders?search=REF-QRIS-001', [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.cash_received', null)
+            ->assertJsonPath('data.0.change_amount', null);
     }
 
     public function test_open_bill_receipt_returns_database_backed_draft_snapshot(): void

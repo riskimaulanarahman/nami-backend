@@ -90,12 +90,14 @@ class OrderService
         ?string $paymentMethodId = null,
         ?string $paymentMethodName = null,
         ?string $paymentReference = null,
+        ?int $cashReceived = null,
     ): Order {
-        return DB::transaction(function () use ($table, $staff, $shift, $paymentMethodId, $paymentMethodName, $paymentReference) {
+        return DB::transaction(function () use ($table, $staff, $shift, $paymentMethodId, $paymentMethodName, $paymentReference, $cashReceived) {
             $table->loadMissing(['orderItems.menuItem', 'involvedStaff']);
 
             $bill = $this->billingService->calculateTableBill($table);
             $paymentType = $this->resolvePaymentMethodType($paymentMethodId);
+            $cashPayment = $this->resolveCashPayment($paymentType, $bill['grand_total'], $cashReceived);
             $now = now();
 
             $involvedStaffIds = $table->involvedStaff->pluck('staff_id')->push($staff->id)->unique()->values()->toArray();
@@ -127,6 +129,8 @@ class OrderService
                 'payment_method_name' => $paymentMethodName,
                 'payment_method_type' => $paymentType,
                 'payment_reference' => $paymentReference,
+                'cash_received' => $cashPayment['cash_received'],
+                'change_amount' => $cashPayment['change_amount'],
                 'cashier_shift_id' => $shift->id,
                 'origin_cashier_shift_id' => $table->origin_cashier_shift_id ?? $shift->id,
                 'origin_staff_id' => $table->origin_staff_id ?? $staff->id,
@@ -238,8 +242,9 @@ class OrderService
         ?string $paymentMethodId = null,
         ?string $paymentMethodName = null,
         ?string $paymentReference = null,
+        ?int $cashReceived = null,
     ): Order {
-        return DB::transaction(function () use ($openBill, $staff, $shift, $paymentMethodId, $paymentMethodName, $paymentReference) {
+        return DB::transaction(function () use ($openBill, $staff, $shift, $paymentMethodId, $paymentMethodName, $paymentReference, $cashReceived) {
             $openBill->loadMissing(['groups.items.menuItem', 'involvedStaff', 'member']);
 
             $settings = BusinessSettings::first();
@@ -267,6 +272,7 @@ class OrderService
             );
 
             $pointsEarned = $this->memberPointService->calculatePointsEarned($subtotal);
+            $cashPayment = $this->resolveCashPayment($paymentType, $totals['total'], $cashReceived);
 
             // Determine bill type
             $billType = $this->determineBillType($openBill);
@@ -299,6 +305,8 @@ class OrderService
                 'payment_method_name' => $paymentMethodName,
                 'payment_method_type' => $paymentType,
                 'payment_reference' => $paymentReference,
+                'cash_received' => $cashPayment['cash_received'],
+                'change_amount' => $cashPayment['change_amount'],
                 'cashier_shift_id' => $shift->id,
                 'origin_cashier_shift_id' => $openBill->origin_cashier_shift_id ?? $shift->id,
                 'origin_staff_id' => $openBill->origin_staff_id ?? $staff->id,
@@ -438,6 +446,29 @@ class OrderService
         if ($hasDineIn && $hasTakeaway) return BillType::Mixed;
         if ($hasTakeaway) return BillType::Takeaway;
         return BillType::DineIn;
+    }
+
+    private function resolveCashPayment(
+        PaymentMethodType $paymentType,
+        int $grandTotal,
+        ?int $cashReceived,
+    ): array {
+        if ($paymentType !== PaymentMethodType::Cash) {
+            return [
+                'cash_received' => null,
+                'change_amount' => null,
+            ];
+        }
+
+        $received = $cashReceived ?? $grandTotal;
+        if ($received < $grandTotal) {
+            throw new \RuntimeException('Nominal pembayaran kurang dari total.');
+        }
+
+        return [
+            'cash_received' => $received,
+            'change_amount' => $received - $grandTotal,
+        ];
     }
 
     private function trackStaffOnTable(Table $table, Staff $staff): void

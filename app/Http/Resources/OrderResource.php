@@ -36,6 +36,8 @@ class OrderResource extends JsonResource
             'payment_method_id' => $this->payment_method_id,
             'payment_method_type' => $this->payment_method_type,
             'payment_reference' => $this->payment_reference,
+            'cash_received' => $this->cash_received,
+            'change_amount' => $this->change_amount,
             'served_by' => $this->served_by,
             'refunded_at' => $this->refunded_at,
             'refunded_by' => $this->refunded_by,

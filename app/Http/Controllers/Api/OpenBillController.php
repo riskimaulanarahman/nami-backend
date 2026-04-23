@@ -444,19 +444,25 @@ class OpenBillController extends Controller
             'payment_method_id' => ['nullable', Rule::exists('payment_options', 'id')->where('tenant_id', $tenantId)],
             'payment_method_name' => 'nullable|string',
             'payment_reference' => 'nullable|string',
+            'cash_received' => 'nullable|integer|min:0',
         ]);
 
         $staff = $request->user();
         $shift = $request->input('active_shift');
 
-        $order = $this->orderService->checkoutOpenBill(
-            $openBill,
-            $staff,
-            $shift,
-            $data['payment_method_id'] ?? null,
-            $data['payment_method_name'] ?? null,
-            $data['payment_reference'] ?? null,
-        );
+        try {
+            $order = $this->orderService->checkoutOpenBill(
+                $openBill,
+                $staff,
+                $shift,
+                $data['payment_method_id'] ?? null,
+                $data['payment_method_name'] ?? null,
+                $data['payment_reference'] ?? null,
+                $data['cash_received'] ?? null,
+            );
+        } catch (\RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
 
         return response()->json(['data' => $order->load(['groups.items', 'involvedStaff'])]);
     }
