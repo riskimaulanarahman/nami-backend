@@ -62,7 +62,13 @@ class OrderController extends Controller
         /** @var Staff $staff */
         $staff = $request->user();
         $shift = $request->input('active_shift');
-        $authorization = $this->resolveRefundAuthorization($staff);
+
+        $authorization = [
+            'method'          => 'staff-session',
+            'authorized_by'   => $staff->name,
+            'authorized_role' => $staff->role,
+            'owner_email'     => null,
+        ];
 
         $order = $this->orderService->refundOrder(
             $order,
@@ -73,24 +79,5 @@ class OrderController extends Controller
         );
 
         return response()->json(['data' => $order->load(['groups.items', 'involvedStaff'])]);
-    }
-
-    private function resolveRefundAuthorization(Staff $staff): array
-    {
-        if ($staff->isAdmin()) {
-            return [
-                'method' => 'admin-session',
-                'authorized_by' => $staff->name,
-                'authorized_role' => 'admin',
-                'owner_email' => null,
-            ];
-        }
-
-        return [
-            'method' => 'staff-session',
-            'authorized_by' => $staff->name,
-            'authorized_role' => $staff->role,
-            'owner_email' => null,
-        ];
     }
 }
