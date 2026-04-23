@@ -13,5 +13,5 @@ class MenuItemRecipe extends Model
     protected $fillable = ['tenant_id', 'menu_item_id', 'ingredient_id', 'quantity'];
     protected function casts(): array { return ['quantity' => 'float']; }
     public function menuItem() { return $this->belongsTo(MenuItem::class); }
-    public function ingredient() { return $this->belongsTo(Ingredient::class); }
+    public function ingredient() { return $this->belongsTo(Ingredient::class)->withTrashed(); }
 }

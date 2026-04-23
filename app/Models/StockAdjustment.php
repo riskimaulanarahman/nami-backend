@@ -30,5 +30,5 @@ class StockAdjustment extends Model
         ];
     }
 
-    public function ingredient() { return $this->belongsTo(Ingredient::class); }
+    public function ingredient() { return $this->belongsTo(Ingredient::class)->withTrashed(); }
 }

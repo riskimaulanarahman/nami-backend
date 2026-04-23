@@ -27,7 +27,15 @@ class StockAdjustmentController extends Controller
         $tenantId = $request->user()?->tenant_id;
 
         $data = $request->validate([
-            'ingredient_id' => ['required', Rule::exists('ingredients', 'id')->where('tenant_id', $tenantId)],
+            'ingredient_id' => [
+                'required',
+                Rule::exists('ingredients', 'id')->where(function ($query) use ($tenantId) {
+                    $query
+                        ->where('tenant_id', $tenantId)
+                        ->where('is_active', true)
+                        ->whereNull('deleted_at');
+                }),
+            ],
             'type' => 'required|in:in,out,adjustment',
             'quantity' => 'required|numeric|min:0.0001',
             'reason' => 'nullable|string',

@@ -22,7 +22,7 @@ class ReportController extends Controller
         $availableTables = Table::where('status', 'available')->count();
         $waitingCount = WaitingListEntry::where('status', 'waiting')->count();
         $openBillCount = OpenBill::where('status', 'open')->count();
-        $lowStockCount = Ingredient::whereColumn('stock', '<=', 'min_stock')->count();
+        $lowStockCount = Ingredient::where('is_active', true)->whereColumn('stock', '<=', 'min_stock')->count();
         $todayStart = Carbon::today();
         $todayEnd = Carbon::now();
 

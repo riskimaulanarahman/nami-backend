@@ -160,6 +160,8 @@ Route::middleware(['auth:sanctum', 'tenant.context', 'staff.token'])->group(func
         // Ingredients
         Route::post('/ingredients', [IngredientController::class, 'store']);
         Route::put('/ingredients/{ingredient}', [IngredientController::class, 'update']);
+        Route::patch('/ingredients/{ingredient}/archive', [IngredientController::class, 'archive']);
+        Route::patch('/ingredients/{ingredient}/restore', [IngredientController::class, 'restore']);
         Route::delete('/ingredients/{ingredient}', [IngredientController::class, 'destroy']);
 
         // Payment options

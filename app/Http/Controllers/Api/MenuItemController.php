@@ -83,7 +83,12 @@ class MenuItemController extends Controller
             'recipe.*.ingredient_id' => [
                 'required_with:recipe',
                 'distinct',
-                Rule::exists('ingredients', 'id')->where('tenant_id', $tenantId),
+                Rule::exists('ingredients', 'id')->where(function ($query) use ($tenantId) {
+                    $query
+                        ->where('tenant_id', $tenantId)
+                        ->where('is_active', true)
+                        ->whereNull('deleted_at');
+                }),
             ],
             'recipe.*.quantity' => 'required_with:recipe|numeric|min:0.0001',
         ];

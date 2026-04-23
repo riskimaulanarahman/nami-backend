@@ -13,6 +13,7 @@ use App\Models\Order;
 use App\Models\OrderGroup;
 use App\Models\PaymentOption;
 use App\Models\Staff;
+use App\Models\StockAdjustment;
 use App\Models\Table;
 use App\Models\Tenant;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -2108,5 +2109,375 @@ class PosFlowTest extends TestCase
             'menu_item_id' => $menuItem->id,
             'unit_cost' => 7500,
         ]);
+    }
+
+    public function test_ingredient_store_uses_safe_defaults_and_exposes_lifecycle_metadata(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient Defaults', 'ingredient-defaults@example.com', 'password123', '1616');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1616');
+
+        $this->postJson('/api/ingredients', [
+            'name' => 'Gula',
+            'unit' => 'gram',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201)
+            ->assertJsonPath('data.name', 'Gula')
+            ->assertJsonPath('data.stock', 0)
+            ->assertJsonPath('data.min_stock', 0)
+            ->assertJsonPath('data.unit_cost', 0)
+            ->assertJsonPath('data.is_active', true)
+            ->assertJsonPath('data.recipe_usage_count', 0)
+            ->assertJsonPath('data.stock_adjustment_count', 0)
+            ->assertJsonPath('data.can_archive', false)
+            ->assertJsonPath('data.can_delete', true);
+
+        $this->assertDatabaseHas('ingredients', [
+            'tenant_id' => $tenant->id,
+            'name' => 'Gula',
+            'is_active' => true,
+        ]);
+    }
+
+    public function test_ingredient_store_rejects_duplicate_name_for_active_and_archived_records(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient Duplicate', 'ingredient-duplicate@example.com', 'password123', '1717');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1717');
+
+        $activeIngredient = Ingredient::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Tepung',
+            'unit' => 'gram',
+            'stock' => 12,
+            'min_stock' => 2,
+            'unit_cost' => 1000,
+            'is_active' => true,
+        ]);
+
+        $this->postJson('/api/ingredients', [
+            'name' => 'Tepung',
+            'unit' => 'gram',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422)
+            ->assertJsonValidationErrors(['name'])
+            ->assertJsonPath('errors.name.0', 'Nama bahan baku sudah digunakan.');
+
+        StockAdjustment::create([
+            'tenant_id' => $tenant->id,
+            'ingredient_id' => $activeIngredient->id,
+            'type' => 'in',
+            'quantity' => 2,
+            'reason' => 'Initial log',
+            'adjusted_by' => 'Seeder',
+            'previous_stock' => 12,
+            'new_stock' => 14,
+        ]);
+
+        $this->patchJson("/api/ingredients/{$activeIngredient->id}/archive", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $this->postJson('/api/ingredients', [
+            'name' => 'Tepung',
+            'unit' => 'gram',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422)
+            ->assertJsonValidationErrors(['name'])
+            ->assertJsonPath('errors.name.0', 'Nama bahan baku sudah digunakan.');
+    }
+
+    public function test_ingredient_delete_force_deletes_unused_record_and_allows_name_reuse(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient Delete', 'ingredient-delete@example.com', 'password123', '1818');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1818');
+
+        $ingredient = Ingredient::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Keju',
+            'unit' => 'gram',
+            'stock' => 3,
+            'min_stock' => 1,
+            'unit_cost' => 2500,
+            'is_active' => true,
+        ]);
+
+        $this->deleteJson("/api/ingredients/{$ingredient->id}", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('message', 'Bahan dihapus permanen.');
+
+        $this->assertDatabaseMissing('ingredients', [
+            'id' => $ingredient->id,
+        ]);
+
+        $this->postJson('/api/ingredients', [
+            'name' => 'Keju',
+            'unit' => 'gram',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201)
+            ->assertJsonPath('data.name', 'Keju');
+    }
+
+    public function test_ingredient_delete_is_blocked_when_used_in_recipe(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient Recipe Guard', 'ingredient-recipe-guard@example.com', 'password123', '1919');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1919');
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Food',
+            'emoji' => '🍽️',
+        ]);
+
+        $ingredient = Ingredient::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Beras',
+            'unit' => 'gram',
+            'stock' => 1000,
+            'min_stock' => 100,
+            'unit_cost' => 15,
+            'is_active' => true,
+        ]);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Nasi Putih',
+            'category_id' => $category->id,
+            'legacy_category' => 'food',
+            'price' => 10000,
+            'cost' => 0,
+            'is_available' => true,
+        ]);
+
+        MenuItemRecipe::create([
+            'tenant_id' => $tenant->id,
+            'menu_item_id' => $menuItem->id,
+            'ingredient_id' => $ingredient->id,
+            'quantity' => 100,
+        ]);
+
+        $this->deleteJson("/api/ingredients/{$ingredient->id}", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422)
+            ->assertJsonValidationErrors(['ingredient'])
+            ->assertJsonPath('errors.ingredient.0', 'Bahan baku masih dipakai di recipe menu dan harus diarsipkan, bukan dihapus.');
+    }
+
+    public function test_ingredient_delete_is_blocked_when_stock_history_exists(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient History Guard', 'ingredient-history-guard@example.com', 'password123', '2020');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2020');
+
+        $ingredient = Ingredient::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Saus',
+            'unit' => 'ml',
+            'stock' => 10,
+            'min_stock' => 1,
+            'unit_cost' => 300,
+            'is_active' => true,
+        ]);
+
+        StockAdjustment::create([
+            'tenant_id' => $tenant->id,
+            'ingredient_id' => $ingredient->id,
+            'type' => 'in',
+            'quantity' => 5,
+            'reason' => 'Initial log',
+            'adjusted_by' => 'Seeder',
+            'previous_stock' => 10,
+            'new_stock' => 15,
+        ]);
+
+        $this->deleteJson("/api/ingredients/{$ingredient->id}", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422)
+            ->assertJsonValidationErrors(['ingredient'])
+            ->assertJsonPath('errors.ingredient.0', 'Bahan baku punya histori stok dan tidak bisa dihapus permanen. Arsipkan bahan ini.');
+    }
+
+    public function test_ingredient_can_be_archived_and_restored_without_breaking_recipe_references(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient Archive', 'ingredient-archive@example.com', 'password123', '2121');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2121');
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Drink',
+            'emoji' => '🥤',
+        ]);
+
+        $ingredient = Ingredient::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Sirup',
+            'unit' => 'ml',
+            'stock' => 20,
+            'min_stock' => 1,
+            'unit_cost' => 200,
+            'is_active' => true,
+        ]);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Es Sirup',
+            'category_id' => $category->id,
+            'legacy_category' => 'drink',
+            'price' => 12000,
+            'cost' => 0,
+            'is_available' => true,
+        ]);
+
+        MenuItemRecipe::create([
+            'tenant_id' => $tenant->id,
+            'menu_item_id' => $menuItem->id,
+            'ingredient_id' => $ingredient->id,
+            'quantity' => 2.5,
+        ]);
+
+        $this->patchJson("/api/ingredients/{$ingredient->id}/archive", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('message', 'Bahan baku diarsipkan. Recipe lama tetap tersimpan, tetapi bahan ini tidak bisa dipakai untuk recipe baru.')
+            ->assertJsonPath('data.is_active', false)
+            ->assertJsonPath('data.can_archive', false)
+            ->assertJsonPath('data.can_delete', false);
+
+        $this->getJson("/api/menu-items/{$menuItem->id}", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.cost', 500)
+            ->assertJsonPath('data.recipes.0.ingredient.name', 'Sirup')
+            ->assertJsonPath('data.recipes.0.ingredient.unit', 'ml')
+            ->assertJsonPath('data.recipes.0.ingredient.unit_cost', 200);
+
+        $this->patchJson("/api/ingredients/{$ingredient->id}/restore", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('message', 'Bahan baku dipulihkan dan bisa dipakai kembali.')
+            ->assertJsonPath('data.is_active', true);
+    }
+
+    public function test_menu_item_store_and_update_reject_archived_and_soft_deleted_ingredients(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Ingredient Guard', 'menu-ingredient-guard@example.com', 'password123', '2222');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2222');
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Food',
+            'emoji' => '🍽️',
+        ]);
+
+        $archivedIngredient = Ingredient::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Telur',
+            'unit' => 'pcs',
+            'stock' => 12,
+            'min_stock' => 2,
+            'unit_cost' => 1800,
+            'is_active' => false,
+        ]);
+
+        $softDeletedIngredient = Ingredient::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Mentega',
+            'unit' => 'gram',
+            'stock' => 5,
+            'min_stock' => 1,
+            'unit_cost' => 900,
+            'is_active' => true,
+        ]);
+        $softDeletedIngredient->delete();
+
+        $this->postJson('/api/menu-items', [
+            'name' => 'Telur Dadar',
+            'category_id' => $category->id,
+            'price' => 14000,
+            'is_available' => true,
+            'recipe' => [
+                [
+                    'ingredient_id' => $archivedIngredient->id,
+                    'quantity' => 2,
+                ],
+            ],
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422)
+            ->assertJsonValidationErrors(['recipe.0.ingredient_id']);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Roti Bakar',
+            'category_id' => $category->id,
+            'legacy_category' => 'food',
+            'price' => 15000,
+            'cost' => 0,
+            'is_available' => true,
+        ]);
+
+        $this->putJson("/api/menu-items/{$menuItem->id}", [
+            'recipe' => [
+                [
+                    'ingredient_id' => $softDeletedIngredient->id,
+                    'quantity' => 1,
+                ],
+            ],
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422)
+            ->assertJsonValidationErrors(['recipe.0.ingredient_id']);
+    }
+
+    public function test_menu_item_index_keeps_legacy_soft_deleted_ingredient_visible_in_recipe_and_cost(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Legacy Ingredient', 'menu-legacy-ingredient@example.com', 'password123', '2323');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2323');
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Drink',
+            'emoji' => '🥤',
+        ]);
+
+        $ingredient = Ingredient::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Kopi Bubuk',
+            'unit' => 'gram',
+            'stock' => 100,
+            'min_stock' => 10,
+            'unit_cost' => 120,
+            'is_active' => true,
+        ]);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Kopi Tubruk',
+            'category_id' => $category->id,
+            'legacy_category' => 'drink',
+            'price' => 16000,
+            'cost' => 0,
+            'is_available' => true,
+        ]);
+
+        MenuItemRecipe::create([
+            'tenant_id' => $tenant->id,
+            'menu_item_id' => $menuItem->id,
+            'ingredient_id' => $ingredient->id,
+            'quantity' => 10,
+        ]);
+
+        $ingredient->delete();
+
+        $this->getJson('/api/menu-items', [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.0.id', $menuItem->id)
+            ->assertJsonPath('data.0.cost', 1200)
+            ->assertJsonPath('data.0.recipes.0.ingredient.name', 'Kopi Bubuk')
+            ->assertJsonPath('data.0.recipes.0.ingredient.unit', 'gram')
+            ->assertJsonPath('data.0.recipes.0.ingredient.unit_cost', 120);
     }
 }
