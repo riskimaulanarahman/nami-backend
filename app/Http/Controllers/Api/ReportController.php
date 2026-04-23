@@ -12,6 +12,7 @@ use App\Models\WaitingListEntry;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Schema;
 
 class ReportController extends Controller
 {
@@ -22,7 +23,13 @@ class ReportController extends Controller
         $availableTables = Table::where('status', 'available')->count();
         $waitingCount = WaitingListEntry::where('status', 'waiting')->count();
         $openBillCount = OpenBill::where('status', 'open')->count();
-        $lowStockCount = Ingredient::where('is_active', true)->whereColumn('stock', '<=', 'min_stock')->count();
+        $lowStockCount = Ingredient::query()
+            ->when(
+                Schema::hasColumn('ingredients', 'is_active'),
+                fn (Builder $query) => $query->where('is_active', true)
+            )
+            ->whereColumn('stock', '<=', 'min_stock')
+            ->count();
         $todayStart = Carbon::today();
         $todayEnd = Carbon::now();
 
