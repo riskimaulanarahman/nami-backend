@@ -2,11 +2,16 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\FulfillmentType;
+use App\Enums\OpenBillStatus;
 use App\Enums\SessionType;
 use App\Enums\TableStatus;
 use App\Http\Controllers\Controller;
 use App\Models\BilliardPackage;
 use App\Models\MenuItem;
+use App\Models\OpenBill;
+use App\Models\OpenBillGroup;
+use App\Models\OpenBillInvolvedStaff;
 use App\Models\Table;
 use App\Models\TableInvolvedStaff;
 use App\Services\BillingService;
@@ -15,6 +20,8 @@ use App\Services\StockService;
 use App\Http\Requests\Table\StartSessionRequest;
 use App\Http\Resources\TableResource;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 class TableController extends Controller
@@ -227,6 +234,123 @@ class TableController extends Controller
         return response()->json(['data' => $table->fresh()->load('orderItems.menuItem')]);
     }
 
+    public function appendDraftOrders(Request $request, Table $table)
+    {
+        $tenantId = $request->user()?->tenant_id;
+        $data = $request->validate([
+            'customer_name' => 'nullable|string|max:255',
+            'groups' => 'required|array|min:1',
+            'groups.*.fulfillment_type' => 'required|in:dine-in,takeaway',
+            'groups.*.items' => 'required|array|min:1',
+            'groups.*.items.*.menu_item_id' => ['required', Rule::exists('menu_items', 'id')->where('tenant_id', $tenantId)],
+            'groups.*.items.*.quantity' => 'required|integer|min:1',
+            'groups.*.items.*.note' => 'nullable|string|max:255',
+        ]);
+
+        if ($table->status !== TableStatus::Occupied) {
+            return response()->json(['message' => 'Meja tidak sedang aktif.'], 422);
+        }
+
+        $staff = $request->user();
+        $shift = $request->input('active_shift');
+
+        $openBill = DB::transaction(function () use ($table, $data, $shift, $staff) {
+            $openBill = $table->active_open_bill_id
+                ? OpenBill::query()->with('groups.items.menuItem')->find($table->active_open_bill_id)
+                : null;
+
+            if (!$openBill) {
+                $openBill = OpenBill::create([
+                    'code' => $this->generateOpenBillCode(),
+                    'customer_name' => $data['customer_name'] ?? '',
+                    'points_to_redeem' => 0,
+                    'status' => OpenBillStatus::Open,
+                    'origin_cashier_shift_id' => $shift->id,
+                    'origin_staff_id' => $staff->id,
+                    'origin_staff_name' => $staff->name,
+                ]);
+
+                OpenBillInvolvedStaff::create([
+                    'open_bill_id' => $openBill->id,
+                    'staff_id' => $staff->id,
+                    'staff_name' => $staff->name,
+                ]);
+            } elseif (!empty($data['customer_name'])) {
+                $openBill->update(['customer_name' => $data['customer_name']]);
+            }
+
+            foreach ($data['groups'] as $groupPayload) {
+                $fulfillmentType = FulfillmentType::from($groupPayload['fulfillment_type']);
+                $group = $openBill->groups()
+                    ->where('fulfillment_type', $fulfillmentType)
+                    ->when(
+                        $fulfillmentType === FulfillmentType::DineIn,
+                        fn ($query) => $query->where('table_id', $table->id),
+                    )
+                    ->first();
+
+                if (!$group) {
+                    $group = OpenBillGroup::create([
+                        'open_bill_id' => $openBill->id,
+                        'fulfillment_type' => $fulfillmentType,
+                        'table_id' => $fulfillmentType === FulfillmentType::DineIn ? $table->id : null,
+                        'table_name' => $fulfillmentType === FulfillmentType::DineIn ? $table->name : null,
+                        'subtotal' => 0,
+                    ]);
+                } elseif ($fulfillmentType === FulfillmentType::DineIn) {
+                    $group->update([
+                        'table_id' => $table->id,
+                        'table_name' => $table->name,
+                    ]);
+                }
+
+                foreach ($groupPayload['items'] as $itemPayload) {
+                    $menuItem = MenuItem::findOrFail($itemPayload['menu_item_id']);
+                    $quantity = max(1, (int) $itemPayload['quantity']);
+                    $note = isset($itemPayload['note']) ? trim((string) $itemPayload['note']) : null;
+                    $existing = $group->items()->where('menu_item_id', $menuItem->id)->first();
+
+                    if ($existing) {
+                        $update = ['quantity' => $existing->quantity + $quantity];
+                        if ($note !== null && $note !== '') {
+                            $update['note'] = $note;
+                        }
+                        $existing->update($update);
+                    } else {
+                        $group->items()->create([
+                            'menu_item_id' => $menuItem->id,
+                            'quantity' => $quantity,
+                            'unit_price' => $menuItem->price,
+                            'added_at' => now(),
+                            'note' => $note !== '' ? $note : null,
+                        ]);
+                    }
+
+                    $this->stockService->deductForMenuItem($menuItem, $quantity);
+                }
+
+                $group->recalculateSubtotal();
+            }
+
+            OpenBillInvolvedStaff::firstOrCreate(
+                ['open_bill_id' => $openBill->id, 'staff_id' => $staff->id],
+                ['staff_name' => $staff->name]
+            );
+
+            $table->update(['active_open_bill_id' => $openBill->id]);
+
+            return $openBill->fresh()->load(['groups.items.menuItem', 'involvedStaff', 'member']);
+        });
+
+        $table->refresh()->load('orderItems.menuItem');
+
+        return response()->json([
+            'data' => $openBill,
+            'active_open_bill_id' => $openBill->id,
+            'table_bill' => $this->billingService->calculateTableBill($table),
+        ]);
+    }
+
     public function removeOrder(Request $request, Table $table, string $menuItemId)
     {
         $item = $table->orderItems()->with('menuItem')->where('menu_item_id', $menuItemId)->first();
@@ -270,5 +394,18 @@ class TableController extends Controller
     {
         $bill = $this->billingService->calculateTableBill($table);
         return response()->json(['data' => $bill]);
+    }
+
+    private function generateOpenBillCode(): string
+    {
+        do {
+            $code = sprintf(
+                'OB-%s-%s',
+                now()->format('ymdHis'),
+                Str::upper(Str::random(4)),
+            );
+        } while (OpenBill::query()->withoutGlobalScopes()->where('code', $code)->exists());
+
+        return $code;
     }
 }

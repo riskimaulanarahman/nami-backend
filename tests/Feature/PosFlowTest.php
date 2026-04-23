@@ -858,6 +858,170 @@ class PosFlowTest extends TestCase
         $this->assertSame(2, OpenBill::findOrFail($response->json('data.id'))->groups()->first()->items()->sum('quantity'));
     }
 
+    public function test_table_append_draft_orders_creates_linked_open_bill_for_active_table(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Append Draft', 'append-draft@example.com', 'password123', '2255');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2255');
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Meja 9',
+            'type' => 'standard',
+            'hourly_rate' => 20000,
+            'status' => 'occupied',
+            'start_time' => now()->subMinutes(10),
+            'session_type' => 'billiard',
+            'billing_mode' => 'open-bill',
+        ]);
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Coffee',
+            'emoji' => '☕',
+        ]);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Americano',
+            'category_id' => $category->id,
+            'legacy_category' => 'drink',
+            'price' => 18000,
+            'cost' => 6000,
+            'emoji' => '☕',
+            'is_available' => true,
+        ]);
+
+        $this->postJson('/api/cashier-shifts/open', [
+            'opening_cash' => 100000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $response = $this->postJson("/api/tables/{$table->id}/draft-orders", [
+            'customer_name' => 'Walk-in',
+            'groups' => [
+                [
+                    'fulfillment_type' => 'dine-in',
+                    'items' => [
+                        [
+                            'menu_item_id' => $menuItem->id,
+                            'quantity' => 2,
+                            'note' => 'Less ice',
+                        ],
+                    ],
+                ],
+            ],
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.customer_name', 'Walk-in')
+            ->assertJsonPath('data.groups.0.fulfillment_type', 'dine-in')
+            ->assertJsonPath('data.groups.0.table_id', $table->id)
+            ->assertJsonPath('data.groups.0.items.0.menu_item_id', $menuItem->id)
+            ->assertJsonPath('data.groups.0.items.0.quantity', 2)
+            ->assertJsonPath('data.groups.0.items.0.note', 'Less ice')
+            ->assertJsonPath('table_bill.items.0.menu_item_id', $menuItem->id);
+
+        $this->assertNotEmpty($response->json('active_open_bill_id'));
+
+        $table->refresh();
+        $this->assertNotNull($table->active_open_bill_id);
+        $bill = OpenBill::findOrFail($table->active_open_bill_id);
+        $this->assertSame('Walk-in', $bill->customer_name);
+        $this->assertSame(2, $bill->groups()->first()->items()->sum('quantity'));
+    }
+
+    public function test_table_append_draft_orders_appends_to_existing_linked_open_bill(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Append Linked', 'append-linked@example.com', 'password123', '2266');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2266');
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Meja 10',
+            'type' => 'standard',
+            'hourly_rate' => 20000,
+            'status' => 'occupied',
+            'start_time' => now()->subMinutes(15),
+            'session_type' => 'billiard',
+            'billing_mode' => 'open-bill',
+        ]);
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Coffee',
+            'emoji' => '☕',
+        ]);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Americano',
+            'category_id' => $category->id,
+            'legacy_category' => 'drink',
+            'price' => 18000,
+            'cost' => 6000,
+            'emoji' => '☕',
+            'is_available' => true,
+        ]);
+
+        $this->postJson('/api/cashier-shifts/open', [
+            'opening_cash' => 100000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $linkedBillResponse = $this->postJson('/api/open-bills', [
+            'customer_name' => 'Initial Guest',
+            'groups' => [
+                [
+                    'fulfillment_type' => 'dine-in',
+                    'table_id' => $table->id,
+                    'items' => [
+                        [
+                            'menu_item_id' => $menuItem->id,
+                            'quantity' => 1,
+                        ],
+                    ],
+                ],
+            ],
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertCreated();
+
+        $linkedBillId = $linkedBillResponse->json('data.id');
+        $table->refresh();
+        $this->assertSame($linkedBillId, $table->active_open_bill_id);
+
+        $this->postJson("/api/tables/{$table->id}/draft-orders", [
+            'customer_name' => 'Merged Guest',
+            'groups' => [
+                [
+                    'fulfillment_type' => 'dine-in',
+                    'items' => [
+                        [
+                            'menu_item_id' => $menuItem->id,
+                            'quantity' => 2,
+                            'note' => 'No sugar',
+                        ],
+                    ],
+                ],
+            ],
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('active_open_bill_id', $linkedBillId)
+            ->assertJsonPath('data.customer_name', 'Merged Guest')
+            ->assertJsonPath('data.groups.0.items.0.quantity', 3)
+            ->assertJsonPath('data.groups.0.items.0.note', 'No sugar');
+
+        $table->refresh();
+        $this->assertSame($linkedBillId, $table->active_open_bill_id);
+
+        $bill = OpenBill::findOrFail($linkedBillId)->load('groups.items');
+        $this->assertSame(3, $bill->groups->first()->items->first()->quantity);
+        $this->assertSame('No sugar', $bill->groups->first()->items->first()->note);
+    }
+
     public function test_stock_is_restored_when_table_and_open_bill_items_are_reduced_removed_or_deleted(): void
     {
         [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Stock Guard', 'stock@example.com', 'password123', '4444');

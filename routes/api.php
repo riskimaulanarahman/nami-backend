@@ -101,6 +101,7 @@ Route::middleware(['auth:sanctum', 'tenant.context', 'staff.token'])->group(func
         Route::post('/tables/{table}/end-session', [TableController::class, 'endSession']);
         Route::post('/tables/{table}/checkout', [TableController::class, 'checkout']);
         Route::post('/tables/{table}/add-order', [TableController::class, 'addOrder']);
+        Route::post('/tables/{table}/draft-orders', [TableController::class, 'appendDraftOrders']);
         Route::delete('/tables/{table}/remove-order/{menuItemId}', [TableController::class, 'removeOrder']);
         Route::put('/tables/{table}/update-order/{menuItemId}', [TableController::class, 'updateOrder']);
 
