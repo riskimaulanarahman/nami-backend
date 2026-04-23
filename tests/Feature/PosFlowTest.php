@@ -1457,6 +1457,8 @@ class PosFlowTest extends TestCase
 
     public function test_package_bill_exposes_remaining_minutes_and_expiry_state(): void
     {
+        $fixedNow = \Illuminate\Support\Carbon::parse('2026-04-23 12:00:00');
+        \Illuminate\Support\Carbon::setTestNow($fixedNow);
         [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Package', 'package@example.com', 'password123', '1212');
         $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1212');
 
@@ -1493,6 +1495,7 @@ class PosFlowTest extends TestCase
         $table->refresh();
         $table->forceFill([
             'start_time' => now()->subMinutes(30),
+            'package_expired_at' => now()->addMinutes(90),
         ])->save();
 
         $this->getJson("/api/tables/{$table->id}", [
@@ -1502,7 +1505,8 @@ class PosFlowTest extends TestCase
             ->assertJsonPath('data.remaining_package_minutes', 90)
             ->assertJsonPath('data.is_package_expired', false)
             ->assertJsonPath('data.is_in_grace_period', false)
-            ->assertJsonPath('data.package_total_price', 50000);
+            ->assertJsonPath('data.package_total_price', 50000)
+            ->assertJsonPath('data.package_expired_at', $fixedNow->copy()->addMinutes(90)->toJSON());
 
         $this->getJson("/api/tables/{$table->id}/bill", [
             'Authorization' => "Bearer {$staffToken}",
@@ -1511,6 +1515,8 @@ class PosFlowTest extends TestCase
             ->assertJsonPath('data.remaining_package_minutes', 90)
             ->assertJsonPath('data.rental_cost', 50000)
             ->assertJsonPath('data.is_package_expired', false);
+
+        \Illuminate\Support\Carbon::setTestNow();
     }
 
     public function test_extend_package_accumulates_minutes_and_price_and_resets_reminder(): void
@@ -1576,6 +1582,8 @@ class PosFlowTest extends TestCase
 
     public function test_convert_package_to_open_bill_charges_only_overrun_after_package_end(): void
     {
+        $fixedNow = \Illuminate\Support\Carbon::parse('2026-04-23 12:00:00');
+        \Illuminate\Support\Carbon::setTestNow($fixedNow);
         [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Convert', 'convert@example.com', 'password123', '3434');
         $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '3434');
 
@@ -1619,12 +1627,20 @@ class PosFlowTest extends TestCase
         $table->refresh();
         $table->forceFill([
             'start_time' => now()->subMinutes(90),
+            'package_expired_at' => now()->subMinutes(30),
         ])->save();
+
+        $this->getJson("/api/tables/{$table->id}", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.is_package_expired', true)
+            ->assertJsonPath('data.billing_mode', 'open-bill')
+            ->assertJsonPath('data.is_auto_converted_to_open_bill', true);
 
         $this->postJson("/api/tables/{$table->id}/package-expiry/acknowledge", [], [
             'Authorization' => "Bearer {$staffToken}",
         ])->assertOk()
-            ->assertJsonPath('data.is_package_expired', true);
+            ->assertJsonPath('data.last_package_reminder_at', $fixedNow->toJSON());
 
         $this->postJson("/api/tables/{$table->id}/convert-to-open-bill", [], [
             'Authorization' => "Bearer {$staffToken}",
@@ -1637,6 +1653,7 @@ class PosFlowTest extends TestCase
             ->assertJsonPath('data.package_included_minutes_total', 60)
             ->assertJsonPath('data.remaining_package_minutes', -30)
             ->assertJsonPath('data.overrun_package_minutes', 30)
+            ->assertJsonPath('data.active_overrun_minutes', 30)
             ->assertJsonPath('data.rental_cost', 50000);
 
         $this->postJson("/api/tables/{$table->id}/checkout", [
@@ -1651,5 +1668,84 @@ class PosFlowTest extends TestCase
             ->assertJsonPath('data.selected_package_price', 30000)
             ->assertJsonPath('data.rental_cost', 50000)
             ->assertJsonPath('data.duration_minutes', 90);
+
+        \Illuminate\Support\Carbon::setTestNow();
+    }
+
+    public function test_extend_package_after_auto_convert_resets_reminder_and_keeps_prior_overrun_cost(): void
+    {
+        $fixedNow = \Illuminate\Support\Carbon::parse('2026-04-23 12:00:00');
+        \Illuminate\Support\Carbon::setTestNow($fixedNow);
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Reminder', 'reminder@example.com', 'password123', '4545');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '4545');
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Table Reminder',
+            'type' => 'standard',
+            'hourly_rate' => 20000,
+        ]);
+
+        $firstPackage = BilliardPackage::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Paket 1 Jam',
+            'duration_hours' => 1,
+            'price' => 30000,
+            'is_active' => true,
+            'sort_order' => 1,
+        ]);
+
+        $secondPackage = BilliardPackage::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Paket 2 Jam',
+            'duration_hours' => 2,
+            'price' => 45000,
+            'is_active' => true,
+            'sort_order' => 2,
+        ]);
+
+        $this->postJson('/api/cashier-shifts/open', [
+            'opening_cash' => 100000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $this->postJson("/api/tables/{$table->id}/start-session", [
+            'session_type' => 'billiard',
+            'billing_mode' => 'package',
+            'package_id' => $firstPackage->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $table->refresh();
+        $table->forceFill([
+            'start_time' => now()->subMinutes(90),
+            'package_expired_at' => now()->subMinutes(30),
+            'package_reminder_shown_at' => now()->subMinutes(5),
+        ])->save();
+
+        $this->getJson("/api/tables/{$table->id}", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.billing_mode', 'open-bill')
+            ->assertJsonPath('data.next_package_reminder_due_at', $fixedNow->toJSON());
+
+        $this->postJson("/api/tables/{$table->id}/extend-package", [
+            'package_id' => $secondPackage->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.billing_mode', 'package')
+            ->assertJsonPath('data.package_total_price', 75000)
+            ->assertJsonPath('data.accrued_overrun_cost', 20000)
+            ->assertJsonPath('data.package_reminder_shown_at', null);
+
+        $this->getJson("/api/tables/{$table->id}/bill", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.rental_cost', 95000);
+
+        \Illuminate\Support\Carbon::setTestNow();
     }
 }

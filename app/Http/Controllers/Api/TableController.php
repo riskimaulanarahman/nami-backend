@@ -35,6 +35,9 @@ class TableController extends Controller
     public function index()
     {
         $tables = Table::with(['layoutPosition', 'involvedStaff', 'orderItems.menuItem'])->get();
+        foreach ($tables as $table) {
+            $this->billingService->synchronizeExpiredPackageSession($table);
+        }
         return TableResource::collection($tables);
     }
 
@@ -52,6 +55,7 @@ class TableController extends Controller
 
     public function show(Table $table)
     {
+        $this->billingService->synchronizeExpiredPackageSession($table);
         return new TableResource($table->load(['layoutPosition', 'involvedStaff', 'orderItems.menuItem']));
     }
 
@@ -94,6 +98,9 @@ class TableController extends Controller
             'selected_package_price' => $package?->price ?? 0,
             'package_minutes_total' => ($package?->duration_hours ?? 0) * 60,
             'package_total_price' => $package?->price ?? 0,
+            'package_expired_at' => $package ? now()->copy()->addMinutes($package->duration_hours * 60) : null,
+            'overrun_started_at' => null,
+            'accrued_overrun_cost' => 0,
             'package_reminder_shown_at' => null,
             'origin_cashier_shift_id' => $shift->id,
             'origin_staff_id' => $staff->id,
@@ -110,6 +117,8 @@ class TableController extends Controller
 
     public function acknowledgePackageExpiry(Table $table)
     {
+        $table = $this->billingService->synchronizeExpiredPackageSession($table);
+
         if ($table->status !== TableStatus::Occupied) {
             return response()->json(['message' => 'Meja tidak sedang aktif.'], 422);
         }
@@ -123,6 +132,7 @@ class TableController extends Controller
 
     public function extendPackage(Request $request, Table $table)
     {
+        $table = $this->billingService->synchronizeExpiredPackageSession($table);
         $tenantId = $request->user()?->tenant_id;
         $data = $request->validate([
             'package_id' => ['required', Rule::exists('billiard_packages', 'id')->where('tenant_id', $tenantId)],
@@ -132,8 +142,11 @@ class TableController extends Controller
             return response()->json(['message' => 'Meja tidak sedang aktif.'], 422);
         }
 
-        if ($table->billing_mode?->value !== 'package') {
-            return response()->json(['message' => 'Perpanjangan paket hanya tersedia untuk sesi paket.'], 422);
+        if (
+            $table->billing_mode?->value !== 'package' &&
+            !$table->package_expired_at
+        ) {
+            return response()->json(['message' => 'Perpanjangan paket hanya tersedia untuk sesi paket billiard.'], 422);
         }
 
         $package = BilliardPackage::findOrFail($data['package_id']);
@@ -141,14 +154,26 @@ class TableController extends Controller
         $currentPrice = $this->billingService->calculatePackageTotalPrice($table);
         $nextMinutes = $currentMinutes + ($package->duration_hours * 60);
         $nextPrice = $currentPrice + $package->price;
+        $isAutoConverted = $table->billing_mode?->value === 'open-bill' && $table->package_expired_at;
+        $accruedOverrunCost = $this->billingService->calculateAccruedOverrunCost($table);
+        if ($isAutoConverted) {
+            $accruedOverrunCost += $this->billingService->calculateOverrunRentalCost($table);
+        }
+        $baseExpiredAt = $isAutoConverted
+            ? now()->copy()
+            : ($table->package_expired_at?->copy() ?? now()->copy());
 
         $table->update([
+            'billing_mode' => 'package',
             'selected_package_id' => $package->id,
             'selected_package_name' => $package->name,
             'selected_package_hours' => intdiv($nextMinutes, 60),
             'selected_package_price' => $nextPrice,
             'package_minutes_total' => $nextMinutes,
             'package_total_price' => $nextPrice,
+            'package_expired_at' => $baseExpiredAt->addMinutes($package->duration_hours * 60),
+            'overrun_started_at' => null,
+            'accrued_overrun_cost' => $accruedOverrunCost,
             'package_reminder_shown_at' => null,
         ]);
 
@@ -157,16 +182,23 @@ class TableController extends Controller
 
     public function convertPackageToOpenBill(Table $table)
     {
+        $table = $this->billingService->synchronizeExpiredPackageSession($table);
+
         if ($table->status !== TableStatus::Occupied) {
             return response()->json(['message' => 'Meja tidak sedang aktif.'], 422);
         }
 
-        if ($table->billing_mode?->value !== 'package') {
+        if (
+            $table->billing_mode?->value !== 'package' &&
+            !($table->billing_mode?->value === 'open-bill' && $table->package_expired_at)
+        ) {
             return response()->json(['message' => 'Sesi ini tidak memakai paket.'], 422);
         }
 
         $table->update([
             'billing_mode' => 'open-bill',
+            'package_expired_at' => $table->package_expired_at ?? $this->billingService->calculatePackageExpiredAt($table) ?? now(),
+            'overrun_started_at' => $table->overrun_started_at ?? $table->package_expired_at ?? now(),
             'package_reminder_shown_at' => null,
         ]);
 
@@ -184,6 +216,7 @@ class TableController extends Controller
 
     public function checkout(Request $request, Table $table)
     {
+        $table = $this->billingService->synchronizeExpiredPackageSession($table);
         $tenantId = $request->user()?->tenant_id;
 
         $data = $request->validate([
@@ -217,6 +250,7 @@ class TableController extends Controller
 
     public function addOrder(Request $request, Table $table)
     {
+        $table = $this->billingService->synchronizeExpiredPackageSession($table);
         $tenantId = $request->user()?->tenant_id;
         $data = $request->validate([
             'menu_item_id' => ['required', Rule::exists('menu_items', 'id')->where('tenant_id', $tenantId)],
@@ -236,6 +270,7 @@ class TableController extends Controller
 
     public function appendDraftOrders(Request $request, Table $table)
     {
+        $table = $this->billingService->synchronizeExpiredPackageSession($table);
         $tenantId = $request->user()?->tenant_id;
         $data = $request->validate([
             'customer_name' => 'nullable|string|max:255',
@@ -392,6 +427,7 @@ class TableController extends Controller
 
     public function bill(Table $table)
     {
+        $table = $this->billingService->synchronizeExpiredPackageSession($table);
         $bill = $this->billingService->calculateTableBill($table);
         return response()->json(['data' => $bill]);
     }

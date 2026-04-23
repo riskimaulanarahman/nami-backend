@@ -21,6 +21,7 @@ class Table extends Model
         'billing_mode', 'active_open_bill_id', 'selected_package_id',
         'selected_package_name', 'selected_package_hours', 'selected_package_price',
         'package_minutes_total', 'package_total_price',
+        'package_expired_at', 'overrun_started_at', 'accrued_overrun_cost',
         'package_reminder_shown_at', 'origin_cashier_shift_id', 'origin_staff_id',
         'origin_staff_name',
     ];
@@ -37,6 +38,9 @@ class Table extends Model
             'selected_package_price' => 'integer',
             'package_minutes_total' => 'integer',
             'package_total_price' => 'integer',
+            'package_expired_at' => 'datetime',
+            'overrun_started_at' => 'datetime',
+            'accrued_overrun_cost' => 'integer',
             'start_time' => 'datetime',
             'package_reminder_shown_at' => 'datetime',
         ];
@@ -76,6 +80,9 @@ class Table extends Model
             'selected_package_price' => 0,
             'package_minutes_total' => 0,
             'package_total_price' => 0,
+            'package_expired_at' => null,
+            'overrun_started_at' => null,
+            'accrued_overrun_cost' => 0,
             'package_reminder_shown_at' => null,
             'origin_cashier_shift_id' => null,
             'origin_staff_id' => null,
