@@ -32,6 +32,11 @@ use Illuminate\Support\Facades\DB;
 
 class OrderService
 {
+    private function resolveMenuItemCost(?MenuItem $menuItem): int
+    {
+        return $menuItem?->effectiveCost() ?? 0;
+    }
+
     private function safeDurationMinutes(\DateTimeInterface $startTime, \DateTimeInterface $endTime): int
     {
         return max(0, intdiv($endTime->getTimestamp() - $startTime->getTimestamp(), 60));
@@ -93,7 +98,7 @@ class OrderService
         ?int $cashReceived = null,
     ): Order {
         return DB::transaction(function () use ($table, $staff, $shift, $paymentMethodId, $paymentMethodName, $paymentReference, $cashReceived) {
-            $table->loadMissing(['orderItems.menuItem', 'involvedStaff']);
+            $table->loadMissing(['orderItems.menuItem.recipes.ingredient', 'involvedStaff']);
 
             $bill = $this->billingService->calculateTableBill($table);
             $paymentType = $this->resolvePaymentMethodType($paymentMethodId);
@@ -155,9 +160,9 @@ class OrderService
                         'order_group_id' => $group->id,
                         'menu_item_id' => $item->menu_item_id,
                         'menu_item_name' => $item->menuItem?->name ?? 'Unknown',
-                        'menu_item_emoji' => $item->menuItem?->emoji ?? '',
+                        'menu_item_emoji' => '',
                         'unit_price' => $item->unit_price,
-                        'unit_cost' => $item->menuItem?->cost ?? 0,
+                        'unit_cost' => $this->resolveMenuItemCost($item->menuItem),
                         'quantity' => $item->quantity,
                         'subtotal' => $item->unit_price * $item->quantity,
                     ]);
@@ -166,7 +171,7 @@ class OrderService
 
             // Include and cleanup linked Open Bill items
             if ($table->active_open_bill_id) {
-                $openBill = OpenBill::with('groups.items.menuItem')->find($table->active_open_bill_id);
+                $openBill = OpenBill::with('groups.items.menuItem.recipes.ingredient')->find($table->active_open_bill_id);
                 if ($openBill) {
                     $dineInGroup = $openBill->groups
                         ->where('fulfillment_type', FulfillmentType::DineIn)
@@ -187,9 +192,9 @@ class OrderService
                                 'order_group_id' => $group->id,
                                 'menu_item_id' => $item->menu_item_id,
                                 'menu_item_name' => $item->menuItem?->name ?? 'Unknown',
-                                'menu_item_emoji' => $item->menuItem?->emoji ?? '',
+                                'menu_item_emoji' => '',
                                 'unit_price' => $item->unit_price,
-                                'unit_cost' => $item->menuItem?->cost ?? 0,
+                                'unit_cost' => $this->resolveMenuItemCost($item->menuItem),
                                 'quantity' => $item->quantity,
                                 'subtotal' => $item->unit_price * $item->quantity,
                             ]);
@@ -247,7 +252,7 @@ class OrderService
         ?int $cashReceived = null,
     ): Order {
         return DB::transaction(function () use ($openBill, $staff, $shift, $paymentMethodId, $paymentMethodName, $paymentReference, $cashReceived) {
-            $openBill->loadMissing(['groups.items.menuItem', 'involvedStaff', 'member']);
+            $openBill->loadMissing(['groups.items.menuItem.recipes.ingredient', 'involvedStaff', 'member']);
 
             $settings = BusinessSettings::first();
             $now = now();
@@ -259,7 +264,7 @@ class OrderService
             foreach ($openBill->groups as $group) {
                 foreach ($group->items as $item) {
                     $subtotal += $item->unit_price * $item->quantity;
-                    $orderCost += ($item->menuItem?->cost ?? 0) * $item->quantity;
+                    $orderCost += $this->resolveMenuItemCost($item->menuItem) * $item->quantity;
                 }
             }
 
@@ -340,9 +345,9 @@ class OrderService
                         'order_group_id' => $orderGroup->id,
                         'menu_item_id' => $item->menu_item_id,
                         'menu_item_name' => $item->menuItem?->name ?? 'Unknown',
-                        'menu_item_emoji' => $item->menuItem?->emoji ?? '',
+                        'menu_item_emoji' => '',
                         'unit_price' => $item->unit_price,
-                        'unit_cost' => $item->menuItem?->cost ?? 0,
+                        'unit_cost' => $this->resolveMenuItemCost($item->menuItem),
                         'quantity' => $item->quantity,
                         'subtotal' => $item->unit_price * $item->quantity,
                         'note' => $item->note ?: null,

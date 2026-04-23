@@ -179,15 +179,15 @@ class BillingService
      */
     public function calculateOrderCost(Table $table): int
     {
-        $table->loadMissing('orderItems.menuItem');
-        $cost = $table->orderItems->sum(fn ($item) => ($item->menuItem?->cost ?? 0) * $item->quantity);
+        $table->loadMissing('orderItems.menuItem.recipes.ingredient');
+        $cost = $table->orderItems->sum(fn ($item) => ($item->menuItem?->effectiveCost() ?? 0) * $item->quantity);
 
         if ($table->active_open_bill_id) {
-            $openBill = \App\Models\OpenBill::with('groups.items.menuItem')->find($table->active_open_bill_id);
+            $openBill = \App\Models\OpenBill::with('groups.items.menuItem.recipes.ingredient')->find($table->active_open_bill_id);
             if ($openBill) {
                 foreach ($openBill->groups as $group) {
                     if ($group->fulfillment_type->value === 'dine-in' && $group->table_id === $table->id) {
-                        $cost += $group->items->sum(fn ($i) => ($i->menuItem?->cost ?? 0) * $i->quantity);
+                        $cost += $group->items->sum(fn ($i) => ($i->menuItem?->effectiveCost() ?? 0) * $i->quantity);
                     }
                 }
             }
@@ -203,7 +203,7 @@ class BillingService
             return [
                 'menu_item_id' => $item->menu_item_id,
                 'menu_item_name' => $item->menuItem?->name ?? 'Unknown',
-                'menu_item_emoji' => $item->menuItem?->emoji ?? '🍽️',
+                'menu_item_emoji' => '',
                 'quantity' => $item->quantity,
                 'unit_price' => $item->unit_price,
                 'subtotal' => $item->unit_price * $item->quantity,
@@ -222,7 +222,7 @@ class BillingService
                         $items[] = [
                             'menu_item_id' => $item->menu_item_id,
                             'menu_item_name' => $item->menuItem?->name ?? 'Unknown',
-                            'menu_item_emoji' => $item->menuItem?->emoji ?? '🍽️',
+                            'menu_item_emoji' => '',
                             'quantity' => $item->quantity,
                             'unit_price' => $item->unit_price,
                             'subtotal' => $item->unit_price * $item->quantity,

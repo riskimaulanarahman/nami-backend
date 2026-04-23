@@ -14,7 +14,8 @@ class MenuCategory extends Model
     use TenantScoped;
     use HasUlids, SoftDeletes;
 
-    protected $fillable = ['tenant_id', 'name', 'emoji', 'description', 'is_active', 'sort_order'];
+    protected $fillable = ['tenant_id', 'name', 'description', 'is_active', 'sort_order'];
+    protected $hidden = ['emoji'];
 
     protected function casts(): array
     {

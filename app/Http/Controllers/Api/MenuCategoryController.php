@@ -17,7 +17,6 @@ class MenuCategoryController extends Controller
     {
         $data = $request->validate([
             'name' => 'required|string|max:255',
-            'emoji' => 'nullable|string|max:10',
             'description' => 'nullable|string',
             'is_active' => 'boolean',
         ]);
@@ -28,7 +27,6 @@ class MenuCategoryController extends Controller
     {
         $data = $request->validate([
             'name' => 'sometimes|string|max:255',
-            'emoji' => 'nullable|string|max:10',
             'description' => 'nullable|string',
             'is_active' => 'sometimes|boolean',
         ]);

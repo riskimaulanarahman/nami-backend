@@ -10,6 +10,7 @@ use App\Models\Member;
 use App\Models\BilliardPackage;
 use App\Models\OpenBill;
 use App\Models\Order;
+use App\Models\OrderGroup;
 use App\Models\PaymentOption;
 use App\Models\Staff;
 use App\Models\Table;
@@ -1747,5 +1748,365 @@ class PosFlowTest extends TestCase
             ->assertJsonPath('data.rental_cost', 95000);
 
         \Illuminate\Support\Carbon::setTestNow();
+    }
+
+    public function test_menu_item_store_rejects_duplicate_recipe_ingredients(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Guard', 'menu-guard@example.com', 'password123', '5656');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '5656');
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Food',
+            'emoji' => '🍽️',
+        ]);
+
+        $ingredient = Ingredient::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Nasi',
+            'unit' => 'porsi',
+            'stock' => 10,
+            'min_stock' => 1,
+            'unit_cost' => 5000,
+        ]);
+
+        $this->postJson('/api/menu-items', [
+            'name' => 'Nasi Goreng',
+            'category_id' => $category->id,
+            'price' => 18000,
+            'cost' => 7000,
+            'is_available' => true,
+            'recipe' => [
+                [
+                    'ingredient_id' => $ingredient->id,
+                    'quantity' => 1,
+                ],
+                [
+                    'ingredient_id' => $ingredient->id,
+                    'quantity' => 0.5,
+                ],
+            ],
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422)
+            ->assertJsonValidationErrors([
+                'recipe.0.ingredient_id',
+                'recipe.1.ingredient_id',
+            ]);
+
+        $this->assertDatabaseMissing('menu_items', [
+            'tenant_id' => $tenant->id,
+            'name' => 'Nasi Goreng',
+        ]);
+    }
+
+    public function test_menu_item_store_derives_cost_from_recipe_without_manual_cost(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Cost', 'menu-cost@example.com', 'password123', '1212');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1212');
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Food',
+            'emoji' => '🍽️',
+        ]);
+
+        $ingredient = Ingredient::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Ayam',
+            'unit' => 'porsi',
+            'stock' => 10,
+            'min_stock' => 1,
+            'unit_cost' => 5000,
+        ]);
+
+        $this->postJson('/api/menu-items', [
+            'name' => 'Ayam Geprek',
+            'category_id' => $category->id,
+            'price' => 22000,
+            'is_available' => true,
+            'recipe' => [
+                [
+                    'ingredient_id' => $ingredient->id,
+                    'quantity' => 1.5,
+                ],
+            ],
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.cost', 7500);
+
+        $this->assertDatabaseHas('menu_items', [
+            'tenant_id' => $tenant->id,
+            'name' => 'Ayam Geprek',
+            'cost' => 0,
+        ]);
+
+        $this->getJson('/api/menu-items', [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.0.cost', 7500);
+    }
+
+    public function test_menu_item_update_ignores_legacy_cost_payload_and_returns_recipe_cost(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Update', 'menu-update@example.com', 'password123', '1313');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1313');
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Drink',
+            'emoji' => '🥤',
+        ]);
+
+        $ingredient = Ingredient::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Syrup',
+            'unit' => 'ml',
+            'stock' => 100,
+            'min_stock' => 5,
+            'unit_cost' => 4000,
+        ]);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Es Soda',
+            'category_id' => $category->id,
+            'legacy_category' => 'drink',
+            'price' => 18000,
+            'cost' => 99000,
+            'is_available' => true,
+        ]);
+
+        MenuItemRecipe::create([
+            'tenant_id' => $tenant->id,
+            'menu_item_id' => $menuItem->id,
+            'ingredient_id' => $ingredient->id,
+            'quantity' => 1,
+        ]);
+
+        $this->putJson("/api/menu-items/{$menuItem->id}", [
+            'cost' => 12345,
+            'recipe' => [
+                [
+                    'ingredient_id' => $ingredient->id,
+                    'quantity' => 2,
+                ],
+            ],
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.cost', 8000);
+
+        $menuItem->refresh();
+
+        $this->assertSame(99000, $menuItem->cost);
+        $this->assertSame(2.0, $menuItem->recipes()->first()->quantity);
+    }
+
+    public function test_menu_item_without_recipe_returns_zero_cost_even_if_legacy_cost_exists(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Zero', 'menu-zero@example.com', 'password123', '1414');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1414');
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Snack',
+            'emoji' => '🍟',
+        ]);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Keripik',
+            'category_id' => $category->id,
+            'legacy_category' => 'snack',
+            'price' => 12000,
+            'cost' => 6000,
+            'is_available' => true,
+        ]);
+
+        $this->getJson('/api/menu-items', [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.0.id', $menuItem->id)
+            ->assertJsonPath('data.0.cost', 0);
+    }
+
+    public function test_table_checkout_uses_recipe_derived_cost_for_order_snapshots(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Table Cost', 'table-cost@example.com', 'password123', '1515');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1515');
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Table Cost',
+            'type' => 'standard',
+            'hourly_rate' => 20000,
+        ]);
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Drink',
+            'emoji' => '🥤',
+        ]);
+
+        $ingredient = Ingredient::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Kopi',
+            'unit' => 'gram',
+            'stock' => 20,
+            'min_stock' => 1,
+            'unit_cost' => 4500,
+        ]);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Americano',
+            'category_id' => $category->id,
+            'legacy_category' => 'drink',
+            'price' => 18000,
+            'cost' => 99999,
+            'is_available' => true,
+        ]);
+
+        MenuItemRecipe::create([
+            'tenant_id' => $tenant->id,
+            'menu_item_id' => $menuItem->id,
+            'ingredient_id' => $ingredient->id,
+            'quantity' => 2,
+        ]);
+
+        $payment = PaymentOption::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Cash',
+            'type' => 'cash',
+            'is_active' => true,
+        ]);
+
+        $this->postJson('/api/cashier-shifts/open', [
+            'opening_cash' => 100000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $this->postJson("/api/tables/{$table->id}/start-session", [
+            'session_type' => 'billiard',
+            'billing_mode' => 'open-bill',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $this->postJson("/api/tables/{$table->id}/add-order", [
+            'menu_item_id' => $menuItem->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $checkout = $this->postJson("/api/tables/{$table->id}/checkout", [
+            'payment_method_id' => $payment->id,
+            'payment_method_name' => 'Cash',
+            'cash_received' => 50000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.order_cost', 9000);
+
+        $orderId = $checkout->json('data.id');
+
+        $this->assertDatabaseHas('order_group_items', [
+            'order_group_id' => OrderGroup::where('order_id', $orderId)->firstOrFail()->id,
+            'menu_item_id' => $menuItem->id,
+            'unit_cost' => 9000,
+        ]);
+    }
+
+    public function test_open_bill_checkout_uses_recipe_derived_cost_for_order_snapshots(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Bill Cost', 'bill-cost@example.com', 'password123', '1616');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1616');
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Meja Bill Cost',
+            'type' => 'standard',
+            'hourly_rate' => 20000,
+        ]);
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Food',
+            'emoji' => '🍔',
+        ]);
+
+        $ingredient = Ingredient::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Patty',
+            'unit' => 'pcs',
+            'stock' => 20,
+            'min_stock' => 1,
+            'unit_cost' => 2500,
+        ]);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Burger',
+            'category_id' => $category->id,
+            'legacy_category' => 'food',
+            'price' => 22000,
+            'cost' => 123,
+            'is_available' => true,
+        ]);
+
+        MenuItemRecipe::create([
+            'tenant_id' => $tenant->id,
+            'menu_item_id' => $menuItem->id,
+            'ingredient_id' => $ingredient->id,
+            'quantity' => 3,
+        ]);
+
+        $payment = PaymentOption::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Cash',
+            'type' => 'cash',
+            'is_active' => true,
+        ]);
+
+        $this->postJson('/api/cashier-shifts/open', [
+            'opening_cash' => 100000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $createBill = $this->postJson('/api/open-bills', [
+            'table_id' => $table->id,
+            'customer_name' => 'Recipe Guest',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $openBillId = $createBill->json('data.id');
+
+        $this->postJson("/api/open-bills/{$openBillId}/add-item", [
+            'fulfillment_type' => 'dine-in',
+            'menu_item_id' => $menuItem->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $checkout = $this->postJson("/api/open-bills/{$openBillId}/checkout", [
+            'payment_method_id' => $payment->id,
+            'payment_method_name' => 'Cash',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.order_cost', 7500);
+
+        $orderId = $checkout->json('data.id');
+
+        $this->assertDatabaseHas('order_group_items', [
+            'order_group_id' => OrderGroup::where('order_id', $orderId)->firstOrFail()->id,
+            'menu_item_id' => $menuItem->id,
+            'unit_cost' => 7500,
+        ]);
     }
 }

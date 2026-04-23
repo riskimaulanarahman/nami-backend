@@ -3,9 +3,10 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\MenuItem;
 use App\Http\Resources\MenuItemResource;
+use App\Models\MenuItem;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 class MenuItemController extends Controller
@@ -21,26 +22,17 @@ class MenuItemController extends Controller
     {
         $tenantId = $request->user()?->tenant_id;
 
-        $data = $request->validate([
-            'name' => 'required|string|max:255',
-            'category_id' => ['required', Rule::exists('menu_categories', 'id')->where('tenant_id', $tenantId)],
-            'price' => 'required|integer|min:0',
-            'cost' => 'integer|min:0',
-            'emoji' => 'nullable|string|max:10',
-            'description' => 'nullable|string',
-            'is_available' => 'boolean',
-            'recipe' => 'nullable|array',
-            'recipe.*.ingredient_id' => ['required_with:recipe', Rule::exists('ingredients', 'id')->where('tenant_id', $tenantId)],
-            'recipe.*.quantity' => 'required_with:recipe|numeric|min:0.0001',
-        ]);
+        $data = $request->validate($this->rules($tenantId), $this->messages());
 
-        $menuItem = MenuItem::create(collect($data)->except('recipe')->toArray());
+        $menuItem = DB::transaction(function () use ($data) {
+            $menuItem = MenuItem::create(collect($data)->except(['recipe', 'cost'])->toArray());
 
-        if (!empty($data['recipe'])) {
-            foreach ($data['recipe'] as $r) {
-                $menuItem->recipes()->create($r);
+            foreach ($data['recipe'] ?? [] as $recipe) {
+                $menuItem->recipes()->create($recipe);
             }
-        }
+
+            return $menuItem;
+        });
 
         return new MenuItemResource($menuItem->fresh()->load(['category', 'recipes.ingredient']));
     }
@@ -54,27 +46,18 @@ class MenuItemController extends Controller
     {
         $tenantId = $request->user()?->tenant_id;
 
-        $data = $request->validate([
-            'name' => 'sometimes|string|max:255',
-            'category_id' => ['sometimes', Rule::exists('menu_categories', 'id')->where('tenant_id', $tenantId)],
-            'price' => 'sometimes|integer|min:0',
-            'cost' => 'sometimes|integer|min:0',
-            'emoji' => 'nullable|string|max:10',
-            'description' => 'nullable|string',
-            'is_available' => 'sometimes|boolean',
-            'recipe' => 'nullable|array',
-            'recipe.*.ingredient_id' => ['required_with:recipe', Rule::exists('ingredients', 'id')->where('tenant_id', $tenantId)],
-            'recipe.*.quantity' => 'required_with:recipe|numeric|min:0.0001',
-        ]);
+        $data = $request->validate($this->rules($tenantId, true), $this->messages());
 
-        $menuItem->update(collect($data)->except('recipe')->toArray());
+        DB::transaction(function () use ($data, $menuItem) {
+            $menuItem->update(collect($data)->except(['recipe', 'cost'])->toArray());
 
-        if (array_key_exists('recipe', $data)) {
-            $menuItem->recipes()->delete();
-            foreach ($data['recipe'] ?? [] as $r) {
-                $menuItem->recipes()->create($r);
+            if (array_key_exists('recipe', $data)) {
+                $menuItem->recipes()->delete();
+                foreach ($data['recipe'] ?? [] as $recipe) {
+                    $menuItem->recipes()->create($recipe);
+                }
             }
-        }
+        });
 
         return new MenuItemResource($menuItem->fresh()->load(['category', 'recipes.ingredient']));
     }
@@ -83,5 +66,33 @@ class MenuItemController extends Controller
     {
         $menuItem->delete();
         return response()->json(['message' => 'Menu item dihapus.']);
+    }
+
+    private function rules(?string $tenantId, bool $partial = false): array
+    {
+        $required = $partial ? 'sometimes' : 'required';
+
+        return [
+            'name' => [$required, 'string', 'max:255'],
+            'category_id' => [$required, Rule::exists('menu_categories', 'id')->where('tenant_id', $tenantId)],
+            'price' => [$required, 'integer', 'min:0'],
+            'cost' => 'integer|min:0',
+            'description' => 'nullable|string',
+            'is_available' => $partial ? 'sometimes|boolean' : 'boolean',
+            'recipe' => 'nullable|array',
+            'recipe.*.ingredient_id' => [
+                'required_with:recipe',
+                'distinct',
+                Rule::exists('ingredients', 'id')->where('tenant_id', $tenantId),
+            ],
+            'recipe.*.quantity' => 'required_with:recipe|numeric|min:0.0001',
+        ];
+    }
+
+    private function messages(): array
+    {
+        return [
+            'recipe.*.ingredient_id.distinct' => 'Bahan pada recipe tidak boleh duplikat.',
+        ];
     }
 }

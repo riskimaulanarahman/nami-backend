@@ -229,7 +229,7 @@ class OpenBillController extends Controller
                         'items' => $group->items->map(fn ($item) => [
                             'menu_item_id' => $item->menu_item_id,
                             'menu_item_name' => $item->menuItem?->name ?? 'Unknown',
-                            'menu_item_emoji' => $item->menuItem?->emoji ?? '',
+                            'menu_item_emoji' => '',
                             'quantity' => $item->quantity,
                             'unit_price' => $item->unit_price,
                             'subtotal' => $item->unit_price * $item->quantity,
