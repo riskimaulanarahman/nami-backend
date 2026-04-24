@@ -4,15 +4,17 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\BusinessSettings;
-use App\Models\PaymentOption;
 use App\Models\Staff;
 use App\Models\Tenant;
+use App\Services\PaymentOptionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class TenantController extends Controller
 {
+    public function __construct(private PaymentOptionService $paymentOptionService) {}
+
     public function register(Request $request)
     {
         $data = $request->validate([
@@ -52,18 +54,7 @@ class TenantController extends Controller
                 'is_active' => true,
             ]);
 
-            PaymentOption::create([
-                'tenant_id' => $tenant->id,
-                'name' => 'Cash',
-                'type' => 'cash',
-                'icon' => '💵',
-                'is_active' => true,
-                'requires_reference' => false,
-                'reference_label' => '',
-                'parent_id' => null,
-                'is_group' => false,
-                'sort_order' => 1,
-            ]);
+            $this->paymentOptionService->ensureSystemDefaultsForTenant($tenant->id);
 
             return $tenant;
         });
@@ -79,4 +70,3 @@ class TenantController extends Controller
         ], 201);
     }
 }
-

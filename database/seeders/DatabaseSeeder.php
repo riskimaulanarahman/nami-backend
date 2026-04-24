@@ -9,11 +9,11 @@ use App\Models\Member;
 use App\Models\MenuCategory;
 use App\Models\MenuItem;
 use App\Models\MenuItemRecipe;
-use App\Models\PaymentOption;
 use App\Models\Staff;
 use App\Models\Table;
 use App\Models\TableLayoutPosition;
 use App\Models\Tenant;
+use App\Services\PaymentOptionService;
 use Illuminate\Database\Seeder;
 
 class DatabaseSeeder extends Seeder
@@ -163,22 +163,7 @@ class DatabaseSeeder extends Seeder
             'quantity' => 15,
         ]);
 
-        PaymentOption::create([
-            'tenant_id' => $tenant->id,
-            'name' => 'Cash',
-            'type' => 'cash',
-            'icon' => '💵',
-            'is_active' => true,
-            'sort_order' => 1,
-        ]);
-        PaymentOption::create([
-            'tenant_id' => $tenant->id,
-            'name' => 'QRIS',
-            'type' => 'qris',
-            'icon' => '📱',
-            'is_active' => true,
-            'sort_order' => 2,
-        ]);
+        app(PaymentOptionService::class)->ensureSystemDefaultsForTenant($tenant->id);
 
         BilliardPackage::create([
             'tenant_id' => $tenant->id,
@@ -207,4 +192,3 @@ class DatabaseSeeder extends Seeder
         ]);
     }
 }
-

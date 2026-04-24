@@ -185,5 +185,6 @@ Route::middleware(['auth:sanctum', 'tenant.context', 'staff.token'])->group(func
         Route::get('/reports/dashboard', [ReportController::class, 'dashboard']);
         Route::get('/reports/billiard', [ReportController::class, 'billiard']);
         Route::get('/reports/fnb', [ReportController::class, 'fnb']);
+        Route::get('/reports/payment-methods', [ReportController::class, 'paymentMethods']);
     });
 });

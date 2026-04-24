@@ -9,6 +9,7 @@ use App\Models\OpenBill;
 use App\Models\Order;
 use App\Models\Table;
 use App\Models\WaitingListEntry;
+use App\Services\PaymentOptionService;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
@@ -16,6 +17,8 @@ use Illuminate\Support\Facades\Schema;
 
 class ReportController extends Controller
 {
+    public function __construct(private PaymentOptionService $paymentOptionService) {}
+
     public function dashboard()
     {
         $totalRevenue = Order::where('status', OrderStatus::Completed)->sum('grand_total');
@@ -160,6 +163,29 @@ class ReportController extends Controller
             'net_profit' => ($grossRevenue - $refundTotal) - $totalCost,
             'avg_order_value' => $salesOrders->count() > 0 ? round($salesOrders->avg('grand_total')) : 0,
             'recent_refunds' => $this->mapRecentRefunds($refundedOrders),
+        ]]);
+    }
+
+    public function paymentMethods(Request $request)
+    {
+        $salesQuery = Order::query()
+            ->whereIn('status', [OrderStatus::Completed, OrderStatus::Refunded]);
+
+        $this->applyDateRange($salesQuery, $request);
+
+        $orders = $salesQuery
+            ->orderByDesc('created_at')
+            ->get();
+
+        $breakdown = $this->paymentOptionService
+            ->summarizeTransactionsByPaymentMethod($orders, $request->user()->tenant_id);
+
+        return response()->json(['data' => [
+            'parents' => $breakdown,
+            'total_transactions' => $orders->count(),
+            'gross_revenue' => (int) $orders->sum('grand_total'),
+            'net_revenue' => (int) $orders
+                ->sum(fn (Order $order) => ($order->status === OrderStatus::Completed ? 1 : -1) * (int) $order->grand_total),
         ]]);
     }
 

@@ -1378,63 +1378,69 @@ class PosFlowTest extends TestCase
         ])->assertStatus(422);
     }
 
-    public function test_payment_option_crud_supports_flutter_admin_and_checkout_contracts(): void
+    public function test_payment_option_crud_enforces_system_default_parents_and_child_only_management(): void
     {
         [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Payment Guard', 'payguard@example.com', 'password123', '8989');
         $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '8989');
 
-        $group = $this->postJson('/api/payment-options', [
-            'name' => 'Non Cash',
-            'type' => 'transfer',
-            'is_group' => true,
+        $list = $this->getJson('/api/payment-options', [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonCount(3, 'data')
+            ->assertJsonPath('data.0.name', 'Cash')
+            ->assertJsonPath('data.0.is_system_default', true)
+            ->assertJsonPath('data.1.name', 'QRIS')
+            ->assertJsonPath('data.2.name', 'Transfer');
+
+        $qrisParentId = collect($list->json('data'))
+            ->firstWhere('type', 'qris')['id'];
+        $transferParentId = collect($list->json('data'))
+            ->firstWhere('type', 'transfer')['id'];
+        $cashParentId = collect($list->json('data'))
+            ->firstWhere('type', 'cash')['id'];
+
+        $this->postJson('/api/payment-options', [
+            'name' => 'Top Level Custom',
             'is_active' => true,
-            'sort_order' => 10,
         ], [
             'Authorization' => "Bearer {$staffToken}",
-        ])->assertStatus(201);
-
-        $groupId = $group->json('data.id');
-
-        $cash = $this->postJson('/api/payment-options', [
-            'name' => 'Cash',
-            'type' => 'cash',
-            'is_active' => true,
-            'sort_order' => 1,
-        ], [
-            'Authorization' => "Bearer {$staffToken}",
-        ])->assertStatus(201);
+        ])->assertStatus(422)
+            ->assertJsonValidationErrors(['parent_id']);
 
         $child = $this->postJson('/api/payment-options', [
-            'name' => 'QRIS Dynamic',
-            'type' => 'qris',
+            'name' => 'BNI',
             'is_active' => true,
             'requires_reference' => true,
             'reference_label' => 'RRN',
-            'parent_id' => $groupId,
+            'parent_id' => $qrisParentId,
             'sort_order' => 2,
         ], [
             'Authorization' => "Bearer {$staffToken}",
-        ])->assertStatus(201);
+        ])->assertStatus(201)
+            ->assertJsonPath('data.type', 'qris')
+            ->assertJsonPath('data.parent_id', $qrisParentId);
 
         $childId = $child->json('data.id');
 
         $this->getJson('/api/payment-options', [
             'Authorization' => "Bearer {$staffToken}",
         ])->assertOk()
-            ->assertJsonPath('data.0.name', 'Cash')
-            ->assertJsonPath('data.1.id', $groupId)
+            ->assertJsonPath('data.1.id', $qrisParentId)
             ->assertJsonPath('data.1.children.0.id', $childId)
-            ->assertJsonPath('data.1.children.0.requires_reference', true)
-            ->assertJsonPath('data.1.children.0.reference_label', 'RRN');
+            ->assertJsonPath('data.1.children.0.name', 'BNI')
+            ->assertJsonPath('data.1.children.0.requires_reference', true);
 
         $this->putJson("/api/payment-options/{$childId}", [
-            'name' => 'QRIS Static',
+            'name' => 'Mandiri',
+            'parent_id' => $transferParentId,
             'reference_label' => 'Reference ID',
             'sort_order' => 5,
         ], [
             'Authorization' => "Bearer {$staffToken}",
         ])->assertOk()
-            ->assertJsonPath('data.name', 'QRIS Static')
+            ->assertJsonPath('data.name', 'Mandiri')
+            ->assertJsonPath('data.type', 'transfer')
+            ->assertJsonPath('data.parent_id', $transferParentId)
             ->assertJsonPath('data.reference_label', 'Reference ID')
             ->assertJsonPath('data.sort_order', 5);
 
@@ -1446,15 +1452,95 @@ class PosFlowTest extends TestCase
         ])->assertStatus(422)
             ->assertJsonValidationErrors(['reference_label']);
 
-        $cashId = $cash->json('data.id');
-        $this->deleteJson("/api/payment-options/{$cashId}", [], [
+        $this->putJson("/api/payment-options/{$cashParentId}", [
+            'name' => 'Cash Custom',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422);
+
+        $this->deleteJson("/api/payment-options/{$cashParentId}", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422);
+
+        $this->deleteJson("/api/payment-options/{$childId}", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+    }
+
+    public function test_payment_method_report_returns_parent_and_child_breakdown(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Payment Report', 'payment-report@example.com', 'password123', '4545');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '4545');
+
+        $defaults = app(\App\Services\PaymentOptionService::class)
+            ->ensureSystemDefaultsForTenant($tenant->id)
+            ->keyBy(fn (PaymentOption $option) => $option->type->value);
+
+        $cashParent = $defaults['cash'];
+        $qrisParent = $defaults['qris'];
+
+        $qrisChild = PaymentOption::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'BNI',
+            'type' => 'qris',
+            'is_active' => true,
+            'requires_reference' => true,
+            'reference_label' => 'RRN',
+            'parent_id' => $qrisParent->id,
+            'is_group' => false,
+            'is_system_default' => false,
+        ]);
+
+        Order::create([
+            'tenant_id' => $tenant->id,
+            'table_name' => 'Walk In',
+            'table_type' => 'standard',
+            'session_type' => 'cafe',
+            'bill_type' => 'dine-in',
+            'start_time' => now()->subHour(),
+            'end_time' => now(),
+            'duration_minutes' => 60,
+            'order_total' => 50000,
+            'grand_total' => 50000,
+            'order_cost' => 20000,
+            'served_by' => $admin->name,
+            'status' => 'completed',
+            'payment_method_id' => $cashParent->id,
+            'payment_method_name' => 'Cash',
+            'payment_method_type' => 'cash',
+        ]);
+
+        Order::create([
+            'tenant_id' => $tenant->id,
+            'table_name' => 'Walk In',
+            'table_type' => 'standard',
+            'session_type' => 'cafe',
+            'bill_type' => 'dine-in',
+            'start_time' => now()->subMinutes(90),
+            'end_time' => now(),
+            'duration_minutes' => 90,
+            'order_total' => 75000,
+            'grand_total' => 75000,
+            'order_cost' => 25000,
+            'served_by' => $admin->name,
+            'status' => 'completed',
+            'payment_method_id' => $qrisChild->id,
+            'payment_method_name' => 'QRIS - BNI',
+            'payment_method_type' => 'non-cash',
+        ]);
+
+        $report = $this->getJson('/api/reports/payment-methods', [
             'Authorization' => "Bearer {$staffToken}",
         ])->assertOk();
 
-        $this->getJson('/api/payment-options', [
-            'Authorization' => "Bearer {$staffToken}",
-        ])->assertOk()
-            ->assertJsonMissing(['id' => $cashId]);
+        $parents = collect($report->json('data.parents'))->keyBy('parent_type');
+
+        $this->assertSame(2, $report->json('data.total_transactions'));
+        $this->assertSame(125000, $report->json('data.gross_revenue'));
+        $this->assertSame(50000, $parents['cash']['gross_revenue']);
+        $this->assertSame('Direct', $parents['cash']['children'][0]['child_name']);
+        $this->assertSame(75000, $parents['qris']['gross_revenue']);
+        $this->assertSame('BNI', $parents['qris']['children'][0]['child_name']);
     }
 
     public function test_package_bill_exposes_remaining_minutes_and_expiry_state(): void

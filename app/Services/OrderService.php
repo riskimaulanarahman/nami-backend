@@ -47,6 +47,7 @@ class OrderService
         private StockService $stockService,
         private MemberPointService $memberPointService,
         private CashierShiftService $cashierShiftService,
+        private PaymentOptionService $paymentOptionService,
     ) {}
 
     /**
@@ -102,6 +103,8 @@ class OrderService
 
             $bill = $this->billingService->calculateTableBill($table);
             $paymentType = $this->resolvePaymentMethodType($paymentMethodId);
+            $resolvedPaymentMethodName = $this->paymentOptionService
+                ->resolvePaymentMethodDisplayName($paymentMethodId, $paymentMethodName);
             $cashPayment = $this->resolveCashPayment($paymentType, $bill['grand_total'], $cashReceived);
             $now = now();
             $packageIncludedMinutes = $this->billingService->calculatePackageIncludedMinutes($table);
@@ -133,7 +136,7 @@ class OrderService
                 'served_by' => implode(' → ', $involvedStaffNames),
                 'status' => OrderStatus::Completed,
                 'payment_method_id' => $paymentMethodId,
-                'payment_method_name' => $paymentMethodName,
+                'payment_method_name' => $resolvedPaymentMethodName,
                 'payment_method_type' => $paymentType,
                 'payment_reference' => $paymentReference,
                 'cash_received' => $cashPayment['cash_received'],
@@ -257,6 +260,8 @@ class OrderService
             $settings = BusinessSettings::first();
             $now = now();
             $paymentType = $this->resolvePaymentMethodType($paymentMethodId);
+            $resolvedPaymentMethodName = $this->paymentOptionService
+                ->resolvePaymentMethodDisplayName($paymentMethodId, $paymentMethodName);
 
             // Calculate subtotal from groups
             $subtotal = 0;
@@ -309,7 +314,7 @@ class OrderService
                 'served_by' => implode(' → ', $involvedStaffNames),
                 'status' => OrderStatus::Completed,
                 'payment_method_id' => $paymentMethodId,
-                'payment_method_name' => $paymentMethodName,
+                'payment_method_name' => $resolvedPaymentMethodName,
                 'payment_method_type' => $paymentType,
                 'payment_reference' => $paymentReference,
                 'cash_received' => $cashPayment['cash_received'],

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\PaymentOption;
 use App\Models\Staff;
 use App\Models\Tenant;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -129,5 +130,28 @@ class AuthTest extends TestCase
         ])
             ->assertOk()
             ->assertJsonPath('data.id', $staffA->id);
+    }
+
+    public function test_tenant_register_creates_system_default_payment_parents(): void
+    {
+        $response = $this->postJson('/api/tenants/register', [
+            'name' => 'Tenant Payment Defaults',
+            'email' => 'defaults@example.com',
+            'password' => 'password123',
+            'admin_name' => 'Owner',
+            'admin_pin' => '1234',
+        ])->assertStatus(201);
+
+        $tenantId = $response->json('tenant.id');
+        $defaults = PaymentOption::withoutGlobalScope('tenant')
+            ->where('tenant_id', $tenantId)
+            ->where('is_system_default', true)
+            ->orderBy('sort_order')
+            ->get();
+
+        $this->assertCount(3, $defaults);
+        $this->assertSame(['Cash', 'QRIS', 'Transfer'], $defaults->pluck('name')->all());
+        $this->assertSame(['cash', 'qris', 'transfer'], $defaults->map(fn (PaymentOption $option) => $option->type->value)->all());
+        $this->assertTrue($defaults->every(fn (PaymentOption $option) => $option->parent_id === null && $option->is_active));
     }
 }
