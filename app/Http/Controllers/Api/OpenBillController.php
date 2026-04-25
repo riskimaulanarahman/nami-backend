@@ -15,6 +15,7 @@ use App\Models\Table;
 use App\Services\BillingService;
 use App\Services\OrderService;
 use App\Services\StockService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -30,8 +31,13 @@ class OpenBillController extends Controller
 
     public function index()
     {
+        $statuses = $this->resolveRequestedStatuses(request());
+
         return response()->json([
-            'data' => OpenBill::where('status', OpenBillStatus::Open)
+            'data' => OpenBill::whereIn(
+                'status',
+                array_map(fn (OpenBillStatus $status) => $status->value, $statuses),
+            )
                 ->with(['groups.items.menuItem', 'involvedStaff', 'member'])
                 ->orderByDesc('created_at')
                 ->get(),
@@ -152,6 +158,12 @@ class OpenBillController extends Controller
     {
         $openBill->loadMissing(['groups.items.menuItem', 'groups.table', 'involvedStaff', 'member']);
 
+        if ($openBill->isFrozenTableDraft()) {
+            return response()->json([
+                'data' => $this->buildFrozenDraftReceiptPayload($openBill),
+            ]);
+        }
+
         $settings = BusinessSettings::first();
         $taxPercent = (int) ($settings?->tax_percent ?? 0);
         $memberBalance = (int) ($openBill->member?->points_balance ?? 0);
@@ -252,6 +264,10 @@ class OpenBillController extends Controller
 
     public function update(Request $request, OpenBill $openBill)
     {
+        if ($response = $this->ensureMutable($openBill)) {
+            return $response;
+        }
+
         $tenantId = $request->user()?->tenant_id;
         $data = $request->validate([
             'customer_name' => 'sometimes|string|max:255',
@@ -264,6 +280,10 @@ class OpenBillController extends Controller
 
     public function destroy(OpenBill $openBill)
     {
+        if ($response = $this->ensureMutable($openBill)) {
+            return $response;
+        }
+
         $openBill->loadMissing('groups.items.menuItem');
 
         $tableIds = $openBill->groups()->whereNotNull('table_id')->pluck('table_id');
@@ -289,6 +309,10 @@ class OpenBillController extends Controller
 
     public function assignTable(Request $request, OpenBill $openBill)
     {
+        if ($response = $this->ensureMutable($openBill)) {
+            return $response;
+        }
+
         $tenantId = $request->user()?->tenant_id;
         $data = $request->validate([
             'table_id' => ['required', Rule::exists('tables', 'id')->where('tenant_id', $tenantId)],
@@ -322,6 +346,10 @@ class OpenBillController extends Controller
 
     public function addItem(Request $request, OpenBill $openBill)
     {
+        if ($response = $this->ensureMutable($openBill)) {
+            return $response;
+        }
+
         $tenantId = $request->user()?->tenant_id;
 
         $data = $request->validate([
@@ -366,6 +394,10 @@ class OpenBillController extends Controller
 
     public function removeItem(Request $request, OpenBill $openBill)
     {
+        if ($response = $this->ensureMutable($openBill)) {
+            return $response;
+        }
+
         $data = $request->validate([
             'fulfillment_type' => 'required|in:dine-in,takeaway',
             'menu_item_id' => 'required|string',
@@ -384,6 +416,10 @@ class OpenBillController extends Controller
 
     public function updateItem(Request $request, OpenBill $openBill)
     {
+        if ($response = $this->ensureMutable($openBill)) {
+            return $response;
+        }
+
         $data = $request->validate([
             'fulfillment_type' => 'required|in:dine-in,takeaway',
             'menu_item_id' => 'required|string',
@@ -425,6 +461,10 @@ class OpenBillController extends Controller
 
     public function attachMember(Request $request, OpenBill $openBill)
     {
+        if ($response = $this->ensureMutable($openBill)) {
+            return $response;
+        }
+
         $tenantId = $request->user()?->tenant_id;
         $data = $request->validate([
             'member_id' => ['nullable', Rule::exists('members', 'id')->where('tenant_id', $tenantId)],
@@ -469,6 +509,21 @@ class OpenBillController extends Controller
 
     public function totals(OpenBill $openBill)
     {
+        if ($openBill->isFrozenTableDraft()) {
+            $orderTotal = $openBill->groups->sum(
+                fn (OpenBillGroup $group) => $group->items->sum(fn ($item) => $item->unit_price * $item->quantity)
+            );
+            $subtotal = $orderTotal + (int) ($openBill->session_charge_total ?? 0);
+
+            return response()->json(['data' => [
+                'subtotal' => $subtotal,
+                'points_redeemed' => 0,
+                'redeem_amount' => 0,
+                'tax' => 0,
+                'total' => $subtotal,
+            ]]);
+        }
+
         $openBill->loadMissing(['groups.items', 'member']);
         $settings = BusinessSettings::first();
 
@@ -542,5 +597,109 @@ class OpenBillController extends Controller
         }
 
         return [];
+    }
+
+    private function resolveRequestedStatuses(Request $request): array
+    {
+        $rawStatuses = collect(explode(',', (string) $request->query('status', 'open')))
+            ->map(fn (string $status) => trim(strtolower($status)))
+            ->filter()
+            ->map(fn (string $status) => OpenBillStatus::tryFrom($status))
+            ->filter()
+            ->values()
+            ->all();
+
+        if (!empty($rawStatuses)) {
+            return $rawStatuses;
+        }
+
+        return [OpenBillStatus::Open];
+    }
+
+    private function ensureMutable(OpenBill $openBill): ?JsonResponse
+    {
+        if (!$openBill->isFrozenTableDraft()) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => 'Frozen draft hanya bisa diprint atau dibayar.',
+        ], 422);
+    }
+
+    private function buildFrozenDraftReceiptPayload(OpenBill $openBill): array
+    {
+        $servedBy = $openBill->involvedStaff
+            ->pluck('staff_name')
+            ->filter()
+            ->unique()
+            ->implode(' → ');
+
+        $orderTotal = $openBill->groups->sum(
+            fn (OpenBillGroup $group) => $group->items->sum(fn ($item) => $item->unit_price * $item->quantity)
+        );
+        $finalTotal = $orderTotal + (int) ($openBill->session_charge_total ?? 0);
+
+        return [
+            'kind' => 'draft-open-bill',
+            'id' => $openBill->id,
+            'code' => $openBill->code,
+            'status' => $openBill->status->value,
+            'table_name' => $openBill->source_table_name ?? ($openBill->customer_name ?: $openBill->code),
+            'table_type' => $openBill->source_table_type?->value,
+            'session_type' => $openBill->session_type?->value ?? 'billiard',
+            'bill_type' => $openBill->selected_package_price > 0 ? 'package' : 'billiard',
+            'billiard_billing_mode' => $openBill->billing_mode?->value,
+            'selected_package_name' => $openBill->selected_package_name,
+            'selected_package_hours' => (int) ($openBill->selected_package_hours ?? 0),
+            'selected_package_price' => (int) ($openBill->selected_package_price ?? 0),
+            'duration_minutes' => (int) ($openBill->duration_minutes ?? 0),
+            'payment_method_name' => null,
+            'payment_reference' => null,
+            'served_by' => $servedBy,
+            'member_name' => $openBill->member?->name,
+            'member_code' => $openBill->member?->code,
+            'customer_name' => $openBill->customer_name,
+            'points_earned' => 0,
+            'points_redeemed' => 0,
+            'start_time' => $openBill->session_started_at,
+            'end_time' => $openBill->session_ended_at,
+            'created_at' => $openBill->created_at,
+            'updated_at' => $openBill->updated_at,
+            'draft_label' => 'UNPAID',
+            'source_table_id' => $openBill->source_table_id,
+            'source_table_name' => $openBill->source_table_name,
+            'locked_final' => $openBill->locked_final,
+            'session_charge_total' => (int) ($openBill->session_charge_total ?? 0),
+            'session_charge_name' => $openBill->session_charge_name,
+            'groups' => $openBill->groups
+                ->sortBy(fn (OpenBillGroup $group) => $group->fulfillment_type === FulfillmentType::DineIn ? 0 : 1)
+                ->map(fn (OpenBillGroup $group) => [
+                    'id' => $group->id,
+                    'fulfillment_type' => $group->fulfillment_type->value,
+                    'table_id' => $group->table_id,
+                    'table_name' => $group->table_name,
+                    'subtotal' => $group->subtotal,
+                    'items' => $group->items->map(fn ($item) => [
+                        'menu_item_id' => $item->menu_item_id,
+                        'menu_item_name' => $item->menuItem?->name ?? 'Unknown',
+                        'menu_item_emoji' => '',
+                        'quantity' => $item->quantity,
+                        'unit_price' => $item->unit_price,
+                        'subtotal' => $item->unit_price * $item->quantity,
+                        'added_at' => $item->added_at,
+                        'note' => $item->note,
+                    ])->values(),
+                ])->values(),
+            'totals' => [
+                'rental_cost' => (int) ($openBill->session_charge_total ?? 0),
+                'order_total' => $orderTotal,
+                'redeem_amount' => 0,
+                'tax_percent' => 0,
+                'tax_amount' => 0,
+                'grand_total_before_tax' => $finalTotal,
+                'final_total' => $finalTotal,
+            ],
+        ];
     }
 }

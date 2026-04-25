@@ -257,6 +257,18 @@ class OrderService
         return DB::transaction(function () use ($openBill, $staff, $shift, $paymentMethodId, $paymentMethodName, $paymentReference, $cashReceived) {
             $openBill->loadMissing(['groups.items.menuItem.recipes.ingredient', 'involvedStaff', 'member']);
 
+            if ($openBill->isFrozenTableDraft()) {
+                return $this->checkoutFrozenTableDraft(
+                    $openBill,
+                    $staff,
+                    $shift,
+                    $paymentMethodId,
+                    $paymentMethodName,
+                    $paymentReference,
+                    $cashReceived,
+                );
+            }
+
             $settings = BusinessSettings::first();
             $now = now();
             $paymentType = $this->resolvePaymentMethodType($paymentMethodId);
@@ -406,6 +418,125 @@ class OrderService
 
             return $order;
         });
+    }
+
+    private function checkoutFrozenTableDraft(
+        OpenBill $openBill,
+        Staff $staff,
+        CashierShift $shift,
+        ?string $paymentMethodId = null,
+        ?string $paymentMethodName = null,
+        ?string $paymentReference = null,
+        ?int $cashReceived = null,
+    ): Order {
+        $paymentType = $this->resolvePaymentMethodType($paymentMethodId);
+        $resolvedPaymentMethodName = $this->paymentOptionService
+            ->resolvePaymentMethodDisplayName($paymentMethodId, $paymentMethodName);
+        $orderTotal = $openBill->groups->sum(
+            fn (OpenBillGroup $group) => $group->items->sum(fn ($item) => $item->unit_price * $item->quantity)
+        );
+        $grandTotal = $orderTotal + (int) ($openBill->session_charge_total ?? 0);
+        $cashPayment = $this->resolveCashPayment($paymentType, $grandTotal, $cashReceived);
+        $now = now();
+
+        $involvedStaffIds = $openBill->involvedStaff->pluck('staff_id')->push($staff->id)->unique()->values()->toArray();
+        $involvedStaffNames = $openBill->involvedStaff->pluck('staff_name')->push($staff->name)->unique()->values()->toArray();
+
+        $order = Order::create([
+            'table_id' => $openBill->source_table_id,
+            'table_name' => $openBill->source_table_name ?: ($openBill->customer_name ?: "Draft {$openBill->code}"),
+            'table_type' => $openBill->source_table_type,
+            'session_type' => $openBill->session_type ?? SessionType::Billiard,
+            'bill_type' => ($openBill->selected_package_price ?? 0) > 0 ? BillType::Package : BillType::Billiard,
+            'billiard_billing_mode' => $openBill->billing_mode,
+            'start_time' => $openBill->session_started_at ?? $openBill->created_at ?? $now,
+            'end_time' => $openBill->session_ended_at ?? $now,
+            'duration_minutes' => (int) ($openBill->duration_minutes ?? 0),
+            'session_duration_hours' => (int) ($openBill->selected_package_hours ?? 0),
+            'rental_cost' => (int) ($openBill->session_charge_total ?? 0),
+            'selected_package_id' => null,
+            'selected_package_name' => $openBill->selected_package_name,
+            'selected_package_hours' => (int) ($openBill->selected_package_hours ?? 0),
+            'selected_package_price' => (int) ($openBill->selected_package_price ?? 0),
+            'order_total' => $orderTotal,
+            'grand_total' => $grandTotal,
+            'order_cost' => $openBill->groups->sum(fn (OpenBillGroup $group) => $group->items->sum(
+                fn ($item) => $this->resolveMenuItemCost($item->menuItem) * $item->quantity
+            )),
+            'served_by' => implode(' → ', $involvedStaffNames),
+            'status' => OrderStatus::Completed,
+            'payment_method_id' => $paymentMethodId,
+            'payment_method_name' => $resolvedPaymentMethodName,
+            'payment_method_type' => $paymentType,
+            'payment_reference' => $paymentReference,
+            'cash_received' => $cashPayment['cash_received'],
+            'change_amount' => $cashPayment['change_amount'],
+            'cashier_shift_id' => $shift->id,
+            'origin_cashier_shift_id' => $openBill->origin_cashier_shift_id ?? $shift->id,
+            'origin_staff_id' => $openBill->origin_staff_id ?? $staff->id,
+            'origin_staff_name' => $openBill->origin_staff_name ?? $staff->name,
+            'is_continued_from_previous_shift' => ($openBill->origin_cashier_shift_id && $openBill->origin_cashier_shift_id !== $shift->id),
+            'member_id' => $openBill->member?->id,
+            'member_code' => $openBill->member?->code,
+            'member_name' => $openBill->member?->name,
+            'points_earned' => 0,
+            'points_redeemed' => 0,
+            'redeem_amount' => 0,
+        ]);
+
+        foreach ($openBill->groups as $billGroup) {
+            if ($billGroup->items->isEmpty()) {
+                continue;
+            }
+
+            $groupSubtotal = $billGroup->items->sum(fn ($item) => $item->unit_price * $item->quantity);
+            $orderGroup = OrderGroup::create([
+                'order_id' => $order->id,
+                'fulfillment_type' => $billGroup->fulfillment_type,
+                'table_id' => $openBill->source_table_id,
+                'table_name' => $billGroup->table_name ?: $openBill->source_table_name,
+                'subtotal' => $groupSubtotal,
+            ]);
+
+            foreach ($billGroup->items as $item) {
+                OrderGroupItem::create([
+                    'order_group_id' => $orderGroup->id,
+                    'menu_item_id' => $item->menu_item_id,
+                    'menu_item_name' => $item->menuItem?->name ?? 'Unknown',
+                    'menu_item_emoji' => '',
+                    'unit_price' => $item->unit_price,
+                    'unit_cost' => $this->resolveMenuItemCost($item->menuItem),
+                    'quantity' => $item->quantity,
+                    'subtotal' => $item->unit_price * $item->quantity,
+                    'note' => $item->note ?: null,
+                ]);
+            }
+        }
+
+        foreach ($involvedStaffIds as $i => $sid) {
+            OrderInvolvedStaff::create([
+                'order_id' => $order->id,
+                'staff_id' => $sid,
+                'staff_name' => $involvedStaffNames[$i] ?? 'Unknown',
+            ]);
+        }
+
+        $this->cashierShiftService->recordTransaction(
+            $shift,
+            $order->grand_total,
+            $paymentType,
+            $involvedStaffIds,
+            $involvedStaffNames,
+        );
+
+        $openBill->groups()->each(fn ($group) => $group->items()->delete());
+        $openBill->groups()->delete();
+        $openBill->involvedStaff()->delete();
+        $openBill->delete();
+
+        event(new OrderCompleted($order));
+
+        return $order;
     }
 
     /**

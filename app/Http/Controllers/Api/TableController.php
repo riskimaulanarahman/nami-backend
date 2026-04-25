@@ -17,6 +17,7 @@ use App\Models\TableInvolvedStaff;
 use App\Services\BillingService;
 use App\Services\OrderService;
 use App\Services\StockService;
+use App\Services\TableDraftService;
 use App\Http\Requests\Table\StartSessionRequest;
 use App\Http\Resources\TableResource;
 use Illuminate\Http\Request;
@@ -30,6 +31,7 @@ class TableController extends Controller
         private OrderService $orderService,
         private BillingService $billingService,
         private StockService $stockService,
+        private TableDraftService $tableDraftService,
     ) {}
 
     public function index()
@@ -212,6 +214,21 @@ class TableController extends Controller
         }
         $table->resetSession();
         return response()->json(['data' => $table->fresh()]);
+    }
+
+    public function closeToDraft(Request $request, Table $table)
+    {
+        $table = $this->billingService->synchronizeExpiredPackageSession($table);
+
+        if ($table->status !== TableStatus::Occupied) {
+            return response()->json(['message' => 'Meja tidak sedang aktif.'], 422);
+        }
+
+        $staff = $request->user();
+        $shift = $request->input('active_shift');
+        $draft = $this->tableDraftService->closeToDraft($table, $staff, $shift);
+
+        return response()->json(['data' => $draft]);
     }
 
     public function checkout(Request $request, Table $table)

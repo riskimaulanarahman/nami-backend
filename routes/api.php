@@ -99,6 +99,7 @@ Route::middleware(['auth:sanctum', 'tenant.context', 'staff.token'])->group(func
         Route::post('/tables/{table}/extend-package', [TableController::class, 'extendPackage']);
         Route::post('/tables/{table}/convert-to-open-bill', [TableController::class, 'convertPackageToOpenBill']);
         Route::post('/tables/{table}/end-session', [TableController::class, 'endSession']);
+        Route::post('/tables/{table}/close-to-draft', [TableController::class, 'closeToDraft']);
         Route::post('/tables/{table}/checkout', [TableController::class, 'checkout']);
         Route::post('/tables/{table}/add-order', [TableController::class, 'addOrder']);
         Route::post('/tables/{table}/draft-orders', [TableController::class, 'appendDraftOrders']);

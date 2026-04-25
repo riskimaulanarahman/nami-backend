@@ -15,6 +15,7 @@ use App\Models\PaymentOption;
 use App\Models\Staff;
 use App\Models\StockAdjustment;
 use App\Models\Table;
+use App\Models\TableOrderItem;
 use App\Models\Tenant;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -79,6 +80,15 @@ class PosFlowTest extends TestCase
         $this->assertNotEmpty($staffToken);
 
         return $staffToken;
+    }
+
+    private function openShift(string $staffToken, int $openingCash = 100000): void
+    {
+        $this->postJson('/api/cashier-shifts/open', [
+            'opening_cash' => $openingCash,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
     }
 
     public function test_staff_token_cannot_access_other_tenant_table(): void
@@ -1022,6 +1032,275 @@ class PosFlowTest extends TestCase
         $bill = OpenBill::findOrFail($linkedBillId)->load('groups.items');
         $this->assertSame(3, $bill->groups->first()->items->first()->quantity);
         $this->assertSame('No sugar', $bill->groups->first()->items->first()->note);
+    }
+
+    public function test_table_close_to_draft_creates_frozen_standalone_draft_and_frees_table(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Close Draft', 'close-draft@example.com', 'password123', '2277');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2277');
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Meja 12',
+            'type' => 'standard',
+            'hourly_rate' => 30000,
+            'status' => 'occupied',
+            'start_time' => now()->subMinutes(70),
+            'session_type' => 'billiard',
+            'billing_mode' => 'package',
+            'selected_package_name' => 'Paket 2 Jam',
+            'selected_package_hours' => 2,
+            'selected_package_price' => 60000,
+            'package_minutes_total' => 120,
+            'package_total_price' => 60000,
+            'origin_staff_id' => $admin->id,
+            'origin_staff_name' => $admin->name,
+        ]);
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Coffee',
+            'emoji' => '☕',
+        ]);
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Latte',
+            'category_id' => $category->id,
+            'legacy_category' => 'drink',
+            'price' => 20000,
+            'cost' => 6000,
+            'emoji' => '☕',
+            'is_available' => true,
+        ]);
+        TableOrderItem::create([
+            'tenant_id' => $tenant->id,
+            'table_id' => $table->id,
+            'menu_item_id' => $menuItem->id,
+            'quantity' => 2,
+            'unit_price' => 20000,
+            'added_at' => now()->subMinutes(30),
+        ]);
+
+        $this->openShift($staffToken);
+
+        $response = $this->postJson("/api/tables/{$table->id}/close-to-draft", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.status', 'draft')
+            ->assertJsonPath('data.locked_final', true)
+            ->assertJsonPath('data.source_table_id', $table->id)
+            ->assertJsonPath('data.source_table_name', 'Meja 12')
+            ->assertJsonPath('data.session_charge_name', 'Paket 2 Jam')
+            ->assertJsonPath('data.groups.0.items.0.menu_item_id', $menuItem->id)
+            ->assertJsonPath('data.groups.0.items.0.quantity', 2);
+
+        $draftId = $response->json('data.id');
+        $draft = OpenBill::findOrFail($draftId);
+        $this->assertTrue($draft->locked_final);
+        $this->assertSame('draft', $draft->status->value);
+
+        $table->refresh();
+        $this->assertSame('available', $table->status->value);
+        $this->assertNull($table->active_open_bill_id);
+        $this->assertSame(0, $table->orderItems()->count());
+    }
+
+    public function test_table_close_to_draft_moves_only_linked_table_group_and_keeps_unrelated_open_bill_groups(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Split Draft', 'split-draft@example.com', 'password123', '2288');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2288');
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Meja 13',
+            'type' => 'standard',
+            'hourly_rate' => 25000,
+            'status' => 'occupied',
+            'start_time' => now()->subMinutes(45),
+            'session_type' => 'billiard',
+            'billing_mode' => 'open-bill',
+        ]);
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Beverage',
+            'emoji' => '🥤',
+        ]);
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Tea',
+            'category_id' => $category->id,
+            'legacy_category' => 'drink',
+            'price' => 15000,
+            'cost' => 4000,
+            'emoji' => '🥤',
+            'is_available' => true,
+        ]);
+
+        $this->openShift($staffToken);
+
+        $createBill = $this->postJson('/api/open-bills', [
+            'customer_name' => 'Walk-in Split',
+            'groups' => [
+                [
+                    'fulfillment_type' => 'dine-in',
+                    'table_id' => $table->id,
+                    'items' => [
+                        [
+                            'menu_item_id' => $menuItem->id,
+                            'quantity' => 1,
+                        ],
+                    ],
+                ],
+                [
+                    'fulfillment_type' => 'takeaway',
+                    'items' => [
+                        [
+                            'menu_item_id' => $menuItem->id,
+                            'quantity' => 2,
+                        ],
+                    ],
+                ],
+            ],
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertCreated();
+
+        $linkedBillId = $createBill->json('data.id');
+
+        $response = $this->postJson("/api/tables/{$table->id}/close-to-draft", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.groups.0.items.0.quantity', 1);
+
+        $draft = OpenBill::findOrFail($response->json('data.id'))->load('groups.items');
+        $this->assertSame(1, $draft->groups->first()->items->sum('quantity'));
+
+        $remainingOpenBill = OpenBill::findOrFail($linkedBillId)->load('groups.items');
+        $this->assertCount(1, $remainingOpenBill->groups);
+        $this->assertSame('takeaway', $remainingOpenBill->groups->first()->fulfillment_type->value);
+        $this->assertSame(2, $remainingOpenBill->groups->first()->items->sum('quantity'));
+    }
+
+    public function test_frozen_table_draft_is_returned_by_status_filter_rejects_mutations_and_can_checkout(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Frozen Draft', 'frozen-draft@example.com', 'password123', '2299');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2299');
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Meja 14',
+            'type' => 'vip',
+            'hourly_rate' => 40000,
+            'status' => 'occupied',
+            'start_time' => now()->subMinutes(80),
+            'session_type' => 'billiard',
+            'billing_mode' => 'open-bill',
+        ]);
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Snack',
+            'emoji' => '🍟',
+        ]);
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Fries',
+            'category_id' => $category->id,
+            'legacy_category' => 'food',
+            'price' => 25000,
+            'cost' => 7000,
+            'emoji' => '🍟',
+            'is_available' => true,
+        ]);
+        TableOrderItem::create([
+            'tenant_id' => $tenant->id,
+            'table_id' => $table->id,
+            'menu_item_id' => $menuItem->id,
+            'quantity' => 1,
+            'unit_price' => 25000,
+            'added_at' => now()->subMinutes(20),
+        ]);
+
+        $payment = PaymentOption::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Cash',
+            'type' => 'cash',
+            'is_active' => true,
+        ]);
+
+        $this->openShift($staffToken);
+
+        $closeResponse = $this->postJson("/api/tables/{$table->id}/close-to-draft", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $draftId = $closeResponse->json('data.id');
+
+        $this->getJson('/api/open-bills', [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonMissingPath('data.0.id');
+
+        $this->getJson('/api/open-bills?status=open,draft', [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonFragment([
+                'id' => $draftId,
+                'status' => 'draft',
+            ]);
+
+        $this->putJson("/api/open-bills/{$draftId}", [
+            'customer_name' => 'Changed',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422);
+
+        $this->deleteJson("/api/open-bills/{$draftId}", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422);
+
+        $this->postJson("/api/open-bills/{$draftId}/add-item", [
+            'fulfillment_type' => 'dine-in',
+            'menu_item_id' => $menuItem->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422);
+
+        $this->postJson("/api/open-bills/{$draftId}/assign-table", [
+            'table_id' => $table->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422);
+
+        $this->postJson("/api/open-bills/{$draftId}/attach-member", [
+            'member_id' => null,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422);
+
+        $receipt = $this->getJson("/api/open-bills/{$draftId}/receipt", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.locked_final', true)
+            ->assertJsonPath('data.session_charge_total', 80000)
+            ->assertJsonPath('data.totals.final_total', 105000);
+
+        $checkout = $this->postJson("/api/open-bills/{$draftId}/checkout", [
+            'payment_method_id' => $payment->id,
+            'payment_method_name' => 'Cash',
+            'cash_received' => 150000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.table_id', $table->id)
+            ->assertJsonPath('data.table_type', 'vip')
+            ->assertJsonPath('data.bill_type', 'billiard')
+            ->assertJsonPath('data.rental_cost', 80000)
+            ->assertJsonPath('data.duration_minutes', 80)
+            ->assertJsonPath('data.grand_total', 105000);
+
+        $this->assertNull(OpenBill::find($draftId));
     }
 
     public function test_stock_is_restored_when_table_and_open_bill_items_are_reduced_removed_or_deleted(): void
