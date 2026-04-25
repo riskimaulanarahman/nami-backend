@@ -109,6 +109,17 @@ class OrderService
             $now = now();
             $packageIncludedMinutes = $this->billingService->calculatePackageIncludedMinutes($table);
             $packageTotalPrice = $this->billingService->calculatePackageTotalPrice($table);
+            $expiredAt = $this->billingService->calculatePackageExpiredAt($table);
+            $effectiveEndTime = (
+                $expiredAt &&
+                $table->billing_mode?->value === 'package' &&
+                $expiredAt->lessThan($now)
+            )
+                ? $expiredAt
+                : $now;
+            $durationMinutes = ($table->billing_mode?->value === 'package' && $expiredAt && $expiredAt->lessThan($now))
+                ? $packageIncludedMinutes
+                : $bill['duration_minutes'];
 
             $involvedStaffIds = $table->involvedStaff->pluck('staff_id')->push($staff->id)->unique()->values()->toArray();
             $involvedStaffNames = $table->involvedStaff->pluck('staff_name')->push($staff->name)->unique()->values()->toArray();
@@ -122,8 +133,8 @@ class OrderService
                 'bill_type' => $table->billing_mode?->value === 'package' ? BillType::Package : BillType::Billiard,
                 'billiard_billing_mode' => $table->billing_mode,
                 'start_time' => $table->start_time ?? $now,
-                'end_time' => $now,
-                'duration_minutes' => $bill['duration_minutes'],
+                'end_time' => $effectiveEndTime,
+                'duration_minutes' => $durationMinutes,
                 'session_duration_hours' => intdiv($packageIncludedMinutes, 60),
                 'rental_cost' => $bill['rental_cost'],
                 'selected_package_id' => $table->selected_package_id,

@@ -6,6 +6,7 @@ use Illuminate\Foundation\Configuration\Middleware;
 use App\Http\Middleware\EnsureStaffToken;
 use App\Http\Middleware\EnsureTenantToken;
 use App\Http\Middleware\ResolveTenantContext;
+use App\Http\Middleware\VerifyInternalCronToken;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -19,6 +20,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'tenant.context' => ResolveTenantContext::class,
             'tenant.token' => EnsureTenantToken::class,
             'staff.token' => EnsureStaffToken::class,
+            'internal.cron' => VerifyInternalCronToken::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

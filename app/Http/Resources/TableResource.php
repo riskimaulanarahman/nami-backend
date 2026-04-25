@@ -11,7 +11,7 @@ class TableResource extends JsonResource
     public function toArray(Request $request): array
     {
         $billingService = app(BillingService::class);
-        $table = $billingService->synchronizeExpiredPackageSession($this->resource);
+        $table = $this->resource;
         $elapsedMinutes = $billingService->calculateDurationMinutes($table);
         $includedPackageMinutes = $billingService->calculatePackageIncludedMinutes($table);
         $remainingPackageMinutes = $billingService->calculateRemainingPackageMinutes($table);
@@ -45,9 +45,9 @@ class TableResource extends JsonResource
             'accrued_overrun_cost' => $billingService->calculateAccruedOverrunCost($table),
             'package_total_price' => $packageTotalPrice,
             'package_expired_at' => $packageExpiredAt,
-            'is_package_expired' => $includedPackageMinutes > 0 && $remainingPackageMinutes <= 0,
-            'is_in_grace_period' => $includedPackageMinutes > 0 && $remainingPackageMinutes <= 0,
-            'is_auto_converted_to_open_bill' => $packageExpiredAt !== null && $table->billing_mode?->value === 'open-bill' && $packageTotalPrice > 0,
+            'is_package_expired' => $packageExpiredAt !== null && $packageExpiredAt->lessThanOrEqualTo(now()),
+            'is_in_grace_period' => false,
+            'is_auto_converted_to_open_bill' => false,
             'package_reminder_shown_at' => $table->package_reminder_shown_at,
             'last_package_reminder_at' => $lastReminderAt,
             'next_package_reminder_due_at' => $nextReminderDueAt,

@@ -15,6 +15,7 @@ use App\Models\OpenBillInvolvedStaff;
 use App\Models\Table;
 use App\Models\TableInvolvedStaff;
 use App\Services\BillingService;
+use App\Services\CloseExpiredPackageSessionsService;
 use App\Services\OrderService;
 use App\Services\StockService;
 use App\Services\TableDraftService;
@@ -32,14 +33,17 @@ class TableController extends Controller
         private BillingService $billingService,
         private StockService $stockService,
         private TableDraftService $tableDraftService,
+        private CloseExpiredPackageSessionsService $closeExpiredPackageSessionsService,
     ) {}
 
-    public function index()
+    public function index(Request $request)
     {
-        $tables = Table::with(['layoutPosition', 'involvedStaff', 'orderItems.menuItem'])->get();
-        foreach ($tables as $table) {
-            $this->billingService->synchronizeExpiredPackageSession($table);
+        $tenantId = $request->user()?->tenant_id;
+        if ($tenantId) {
+            $this->closeExpiredPackageSessionsService->runTenantFallback($tenantId);
         }
+
+        $tables = Table::with(['layoutPosition', 'involvedStaff', 'orderItems.menuItem'])->get();
         return TableResource::collection($tables);
     }
 
@@ -149,6 +153,13 @@ class TableController extends Controller
             !$table->package_expired_at
         ) {
             return response()->json(['message' => 'Perpanjangan paket hanya tersedia untuk sesi paket billiard.'], 422);
+        }
+
+        $expiredAt = $this->billingService->calculatePackageExpiredAt($table);
+        if ($expiredAt && $expiredAt->lessThanOrEqualTo(now())) {
+            return response()->json([
+                'message' => 'Paket sudah habis. Mulai sesi baru dari meja yang sudah tersedia kembali.',
+            ], 422);
         }
 
         $package = BilliardPackage::findOrFail($data['package_id']);

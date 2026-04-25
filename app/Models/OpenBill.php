@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Models\Concerns\TenantScoped;
 use App\Enums\BillingMode;
+use App\Enums\OpenBillCloseReason;
 use App\Enums\OpenBillStatus;
 use App\Enums\SessionType;
 use App\Enums\TableType;
@@ -25,7 +26,7 @@ class OpenBill extends Model
         'session_started_at', 'session_ended_at', 'duration_minutes',
         'session_charge_name', 'session_charge_total',
         'selected_package_name', 'selected_package_hours',
-        'selected_package_price', 'locked_final',
+        'selected_package_price', 'locked_final', 'close_reason',
     ];
 
     protected function casts(): array
@@ -43,6 +44,7 @@ class OpenBill extends Model
             'selected_package_hours' => 'integer',
             'selected_package_price' => 'integer',
             'locked_final' => 'boolean',
+            'close_reason' => OpenBillCloseReason::class,
         ];
     }
 

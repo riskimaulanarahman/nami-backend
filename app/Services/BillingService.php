@@ -7,8 +7,6 @@ use Illuminate\Support\Carbon;
 
 class BillingService
 {
-    private const PACKAGE_REMINDER_INTERVAL_MINUTES = 5;
-
     private function elapsedSecondsSince(?Carbon $startTime): int
     {
         if (!$startTime) return 0;
@@ -20,7 +18,21 @@ class BillingService
     {
         if (!$table->start_time) return 0;
 
-        return intval(floor($this->elapsedSecondsSince($table->start_time) / 60));
+        $endTime = now();
+        $expiredAt = $this->calculatePackageExpiredAt($table);
+
+        if (
+            $expiredAt &&
+            $table->billing_mode?->value === 'package' &&
+            $expiredAt->lessThan($endTime)
+        ) {
+            $endTime = $expiredAt;
+        }
+
+        return max(
+            0,
+            intval(floor(($endTime->getTimestamp() - $table->start_time->getTimestamp()) / 60)),
+        );
     }
 
     public function calculatePackageIncludedMinutes(Table $table): int
@@ -67,17 +79,7 @@ class BillingService
 
     public function calculateNextPackageReminderDueAt(Table $table): ?Carbon
     {
-        $expiredAt = $this->calculatePackageExpiredAt($table);
-        if (!$expiredAt) {
-            return null;
-        }
-
-        $lastReminderAt = $this->calculateLastPackageReminderAt($table);
-        if (!$lastReminderAt) {
-            return $expiredAt;
-        }
-
-        return $lastReminderAt->copy()->addMinutes(self::PACKAGE_REMINDER_INTERVAL_MINUTES);
+        return null;
     }
 
     public function calculateRemainingPackageMinutes(Table $table): int
@@ -87,12 +89,17 @@ class BillingService
             return 0;
         }
 
-        return intval(floor(now()->diffInSeconds($expiredAt, false) / 60));
+        return max(0, intval(floor(now()->diffInSeconds($expiredAt, false) / 60)));
     }
 
     public function calculateOverrunPackageMinutes(Table $table): int
     {
-        return max(0, -$this->calculateRemainingPackageMinutes($table));
+        $expiredAt = $this->calculatePackageExpiredAt($table);
+        if (!$expiredAt || $table->billing_mode?->value !== 'open-bill') {
+            return 0;
+        }
+
+        return max(0, intval(floor($expiredAt->diffInSeconds(now(), false) / 60)));
     }
 
     public function calculateAccruedOverrunCost(Table $table): int
@@ -102,6 +109,10 @@ class BillingService
 
     public function calculateActiveOverrunMinutes(Table $table): int
     {
+        if ($table->billing_mode?->value !== 'open-bill') {
+            return 0;
+        }
+
         $anchor = $table->overrun_started_at;
         if (!$anchor instanceof Carbon) {
             $anchor = $this->calculatePackageExpiredAt($table);
@@ -238,31 +249,6 @@ class BillingService
 
     public function synchronizeExpiredPackageSession(Table $table): Table
     {
-        $includedMinutes = $this->calculatePackageIncludedMinutes($table);
-        if (!$table->start_time || $includedMinutes <= 0) {
-            return $table;
-        }
-
-        $expiredAt = $this->calculatePackageExpiredAt($table);
-        $updates = [];
-
-        if (!$table->package_expired_at && $expiredAt) {
-            $updates['package_expired_at'] = $expiredAt;
-        }
-
-        if (
-            $expiredAt &&
-            $table->billing_mode?->value === 'package' &&
-            $expiredAt->lessThanOrEqualTo(now())
-        ) {
-            $updates['billing_mode'] = 'open-bill';
-            $updates['overrun_started_at'] = $table->overrun_started_at ?? $expiredAt;
-        }
-
-        if (!empty($updates)) {
-            $table->forceFill($updates)->save();
-        }
-
         return $table;
     }
 
@@ -271,7 +257,6 @@ class BillingService
      */
     public function calculateTableBill(Table $table): array
     {
-        $table = $this->synchronizeExpiredPackageSession($table);
         $table->loadMissing('orderItems.menuItem');
 
         $durationMinutes = $this->calculateDurationMinutes($table);
@@ -281,7 +266,7 @@ class BillingService
         $orderCost = $this->calculateOrderCost($table);
         $includedPackageMinutes = $this->calculatePackageIncludedMinutes($table);
         $remainingPackageMinutes = $this->calculateRemainingPackageMinutes($table);
-        $overrunPackageMinutes = max(0, -$remainingPackageMinutes);
+        $overrunPackageMinutes = $this->calculateOverrunPackageMinutes($table);
         $packageTotalPrice = $this->calculatePackageTotalPrice($table);
         $packageExpiredAt = $this->calculatePackageExpiredAt($table);
         $lastReminderAt = $this->calculateLastPackageReminderAt($table);
@@ -301,9 +286,9 @@ class BillingService
             'overrun_package_minutes' => $overrunPackageMinutes,
             'active_overrun_minutes' => $activeOverrunMinutes,
             'accrued_overrun_cost' => $accruedOverrunCost,
-            'is_package_expired' => $includedPackageMinutes > 0 && $remainingPackageMinutes <= 0,
-            'is_in_grace_period' => $includedPackageMinutes > 0 && $remainingPackageMinutes <= 0,
-            'is_auto_converted_to_open_bill' => $packageExpiredAt !== null && $table->billing_mode?->value === 'open-bill' && $packageTotalPrice > 0,
+            'is_package_expired' => $packageExpiredAt !== null && $packageExpiredAt->lessThanOrEqualTo(now()),
+            'is_in_grace_period' => false,
+            'is_auto_converted_to_open_bill' => false,
             'package_total_price' => $packageTotalPrice,
             'package_expired_at' => $packageExpiredAt,
             'last_package_reminder_at' => $lastReminderAt,

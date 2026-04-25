@@ -8,6 +8,7 @@ use App\Models\MenuItem;
 use App\Models\MenuItemRecipe;
 use App\Models\Member;
 use App\Models\BilliardPackage;
+use App\Enums\OpenBillStatus;
 use App\Models\OpenBill;
 use App\Models\Order;
 use App\Models\OrderGroup;
@@ -1947,16 +1948,18 @@ class PosFlowTest extends TestCase
             ->assertJsonPath('data.package_reminder_shown_at', null);
     }
 
-    public function test_convert_package_to_open_bill_charges_only_overrun_after_package_end(): void
+    public function test_internal_scheduler_auto_closes_expired_package_to_draft_without_overrun(): void
     {
         $fixedNow = \Illuminate\Support\Carbon::parse('2026-04-23 12:00:00');
         \Illuminate\Support\Carbon::setTestNow($fixedNow);
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Convert', 'convert@example.com', 'password123', '3434');
+        config(['internal_jobs.token' => 'secret-token']);
+
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Scheduler', 'scheduler@example.com', 'password123', '3434');
         $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '3434');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
-            'name' => 'Table Convert',
+            'name' => 'Table Scheduler',
             'type' => 'standard',
             'hourly_rate' => 20000,
         ]);
@@ -1968,13 +1971,6 @@ class PosFlowTest extends TestCase
             'price' => 30000,
             'is_active' => true,
             'sort_order' => 1,
-        ]);
-
-        $payment = PaymentOption::create([
-            'tenant_id' => $tenant->id,
-            'name' => 'Cash',
-            'type' => 'cash',
-            'is_active' => true,
         ]);
 
         $this->postJson('/api/cashier-shifts/open', [
@@ -1997,58 +1993,117 @@ class PosFlowTest extends TestCase
             'package_expired_at' => now()->subMinutes(30),
         ])->save();
 
-        $this->getJson("/api/tables/{$table->id}", [
-            'Authorization' => "Bearer {$staffToken}",
-        ])->assertOk()
-            ->assertJsonPath('data.is_package_expired', true)
-            ->assertJsonPath('data.billing_mode', 'open-bill')
-            ->assertJsonPath('data.is_auto_converted_to_open_bill', true);
+        $this->getJson('/internal/jobs/close-expired-package-sessions?token=secret-token')
+            ->assertOk()
+            ->assertJsonPath('status', 'ok')
+            ->assertJsonPath('processed', 1)
+            ->assertJsonPath('failed', 0);
 
-        $this->postJson("/api/tables/{$table->id}/package-expiry/acknowledge", [], [
-            'Authorization' => "Bearer {$staffToken}",
-        ])->assertOk()
-            ->assertJsonPath('data.last_package_reminder_at', $fixedNow->toJSON());
+        $table->refresh();
+        $this->assertSame('available', $table->status->value);
+        $this->assertNull($table->active_open_bill_id);
 
-        $this->postJson("/api/tables/{$table->id}/convert-to-open-bill", [], [
-            'Authorization' => "Bearer {$staffToken}",
-        ])->assertOk()
-            ->assertJsonPath('data.billing_mode', 'open-bill');
+        $draft = OpenBill::query()
+            ->withoutGlobalScopes()
+            ->where('tenant_id', $tenant->id)
+            ->where('status', OpenBillStatus::Draft)
+            ->latest('created_at')
+            ->first();
 
-        $this->getJson("/api/tables/{$table->id}/bill", [
-            'Authorization' => "Bearer {$staffToken}",
-        ])->assertOk()
-            ->assertJsonPath('data.package_included_minutes_total', 60)
-            ->assertJsonPath('data.remaining_package_minutes', -30)
-            ->assertJsonPath('data.overrun_package_minutes', 30)
-            ->assertJsonPath('data.active_overrun_minutes', 30)
-            ->assertJsonPath('data.rental_cost', 50000);
+        $this->assertNotNull($draft);
+        $this->assertSame('package-expired-auto', $draft->close_reason?->value);
+        $this->assertTrue($draft->locked_final);
+        $this->assertSame(30000, $draft->session_charge_total);
+        $this->assertSame(60, $draft->duration_minutes);
+        $this->assertEquals($fixedNow->copy()->subMinutes(30)->toJSON(), $draft->session_ended_at?->toJSON());
 
-        $this->postJson("/api/tables/{$table->id}/checkout", [
-            'payment_method_id' => $payment->id,
-            'payment_method_name' => 'Cash',
-            'cash_received' => 60000,
-        ], [
+        $this->getJson('/api/open-bills?status=open,draft', [
             'Authorization' => "Bearer {$staffToken}",
         ])->assertOk()
-            ->assertJsonPath('data.billiard_billing_mode', 'open-bill')
-            ->assertJsonPath('data.selected_package_hours', 1)
-            ->assertJsonPath('data.selected_package_price', 30000)
-            ->assertJsonPath('data.rental_cost', 50000)
-            ->assertJsonPath('data.duration_minutes', 90);
+            ->assertJsonPath('data.0.close_reason', 'package-expired-auto')
+            ->assertJsonPath('data.0.locked_final', true);
 
         \Illuminate\Support\Carbon::setTestNow();
     }
 
-    public function test_extend_package_after_auto_convert_resets_reminder_and_keeps_prior_overrun_cost(): void
+    public function test_internal_scheduler_route_rejects_invalid_token_and_respects_active_lock(): void
+    {
+        config(['internal_jobs.token' => 'secret-token']);
+
+        $this->getJson('/internal/jobs/close-expired-package-sessions?token=wrong-token')
+            ->assertStatus(403);
+
+        \Illuminate\Support\Facades\Cache::put(
+            'internal-job:close-expired-package-sessions',
+            now()->toISOString(),
+            now()->addSeconds(55),
+        );
+
+        $this->getJson('/internal/jobs/close-expired-package-sessions?token=secret-token')
+            ->assertOk()
+            ->assertJsonPath('status', 'locked')
+            ->assertJsonPath('processed', 0);
+
+        \Illuminate\Support\Facades\Cache::forget('internal-job:close-expired-package-sessions');
+    }
+
+    public function test_tables_index_triggers_tenant_fallback_auto_close_when_scheduler_is_not_running(): void
+    {
+        $fixedNow = \Illuminate\Support\Carbon::parse('2026-04-25 12:00:00');
+        \Illuminate\Support\Carbon::setTestNow($fixedNow);
+
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Fallback', 'fallback@example.com', 'password123', '7878');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '7878');
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Table Fallback',
+            'type' => 'standard',
+            'hourly_rate' => 25000,
+            'status' => 'occupied',
+            'session_type' => 'billiard',
+            'billing_mode' => 'package',
+            'start_time' => $fixedNow->copy()->subMinutes(90),
+            'selected_package_name' => 'Paket 1 Jam',
+            'selected_package_hours' => 1,
+            'selected_package_price' => 40000,
+            'package_minutes_total' => 60,
+            'package_total_price' => 40000,
+            'package_expired_at' => $fixedNow->copy()->subMinutes(30),
+            'origin_staff_id' => $admin->id,
+            'origin_staff_name' => $admin->name,
+        ]);
+
+        $this->getJson('/api/tables', [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $table->refresh();
+        $this->assertSame('available', $table->status->value);
+
+        $draft = OpenBill::query()
+            ->withoutGlobalScopes()
+            ->where('tenant_id', $tenant->id)
+            ->where('source_table_id', $table->id)
+            ->latest('created_at')
+            ->first();
+
+        $this->assertNotNull($draft);
+        $this->assertSame('package-expired-auto', $draft->close_reason?->value);
+
+        \Illuminate\Support\Carbon::setTestNow();
+    }
+
+    public function test_read_endpoints_do_not_auto_close_or_convert_expired_package_sessions(): void
     {
         $fixedNow = \Illuminate\Support\Carbon::parse('2026-04-23 12:00:00');
         \Illuminate\Support\Carbon::setTestNow($fixedNow);
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Reminder', 'reminder@example.com', 'password123', '4545');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Read Only Expiry', 'read-expiry@example.com', 'password123', '4545');
         $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '4545');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
-            'name' => 'Table Reminder',
+            'name' => 'Table Read',
             'type' => 'standard',
             'hourly_rate' => 20000,
         ]);
@@ -2060,15 +2115,6 @@ class PosFlowTest extends TestCase
             'price' => 30000,
             'is_active' => true,
             'sort_order' => 1,
-        ]);
-
-        $secondPackage = BilliardPackage::create([
-            'tenant_id' => $tenant->id,
-            'name' => 'Paket 2 Jam',
-            'duration_hours' => 2,
-            'price' => 45000,
-            'is_active' => true,
-            'sort_order' => 2,
         ]);
 
         $this->postJson('/api/cashier-shifts/open', [
@@ -2089,29 +2135,37 @@ class PosFlowTest extends TestCase
         $table->forceFill([
             'start_time' => now()->subMinutes(90),
             'package_expired_at' => now()->subMinutes(30),
-            'package_reminder_shown_at' => now()->subMinutes(5),
         ])->save();
 
         $this->getJson("/api/tables/{$table->id}", [
             'Authorization' => "Bearer {$staffToken}",
         ])->assertOk()
-            ->assertJsonPath('data.billing_mode', 'open-bill')
-            ->assertJsonPath('data.next_package_reminder_due_at', $fixedNow->toJSON());
-
-        $this->postJson("/api/tables/{$table->id}/extend-package", [
-            'package_id' => $secondPackage->id,
-        ], [
-            'Authorization' => "Bearer {$staffToken}",
-        ])->assertOk()
             ->assertJsonPath('data.billing_mode', 'package')
-            ->assertJsonPath('data.package_total_price', 75000)
-            ->assertJsonPath('data.accrued_overrun_cost', 20000)
-            ->assertJsonPath('data.package_reminder_shown_at', null);
+            ->assertJsonPath('data.is_package_expired', true)
+            ->assertJsonPath('data.is_in_grace_period', false)
+            ->assertJsonPath('data.is_auto_converted_to_open_bill', false)
+            ->assertJsonPath('data.next_package_reminder_due_at', null);
 
         $this->getJson("/api/tables/{$table->id}/bill", [
             'Authorization' => "Bearer {$staffToken}",
         ])->assertOk()
-            ->assertJsonPath('data.rental_cost', 95000);
+            ->assertJsonPath('data.rental_cost', 30000)
+            ->assertJsonPath('data.duration_minutes', 60)
+            ->assertJsonPath('data.remaining_package_minutes', 0)
+            ->assertJsonPath('data.overrun_package_minutes', 0)
+            ->assertJsonPath('data.active_overrun_minutes', 0)
+            ->assertJsonPath('data.is_auto_converted_to_open_bill', false);
+
+        $table->refresh();
+        $this->assertSame('occupied', $table->status->value);
+        $this->assertSame('package', $table->billing_mode?->value);
+
+        $this->postJson("/api/tables/{$table->id}/extend-package", [
+            'package_id' => $firstPackage->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422)
+            ->assertJsonPath('message', 'Paket sudah habis. Mulai sesi baru dari meja yang sudah tersedia kembali.');
 
         \Illuminate\Support\Carbon::setTestNow();
     }

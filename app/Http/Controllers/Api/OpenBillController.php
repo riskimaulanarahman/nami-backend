@@ -230,6 +230,7 @@ class OpenBillController extends Controller
                 'created_at' => $openBill->created_at,
                 'updated_at' => $openBill->updated_at,
                 'draft_label' => 'UNPAID',
+                'close_reason' => $openBill->close_reason?->value,
                 'groups' => $openBill->groups
                     ->sortBy(fn (OpenBillGroup $group) => $group->fulfillment_type === FulfillmentType::DineIn ? 0 : 1)
                     ->map(fn (OpenBillGroup $group) => [
@@ -670,6 +671,7 @@ class OpenBillController extends Controller
             'source_table_id' => $openBill->source_table_id,
             'source_table_name' => $openBill->source_table_name,
             'locked_final' => $openBill->locked_final,
+            'close_reason' => $openBill->close_reason?->value,
             'session_charge_total' => (int) ($openBill->session_charge_total ?? 0),
             'session_charge_name' => $openBill->session_charge_name,
             'groups' => $openBill->groups
