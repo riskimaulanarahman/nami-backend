@@ -18,6 +18,7 @@ use App\Services\StockService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
@@ -279,13 +280,21 @@ class OpenBillController extends Controller
         return response()->json(['data' => $openBill->fresh()->load('member')]);
     }
 
-    public function destroy(OpenBill $openBill)
+    public function destroy(Request $request, OpenBill $openBill)
     {
         if ($response = $this->ensureMutable($openBill)) {
             return $response;
         }
 
         $openBill->loadMissing('groups.items.menuItem');
+        $totalAmount = $openBill->draftTotalAmount();
+        $data = Validator::make($this->resolveDeletePayload($request), [
+            'delete_reason' => [
+                $totalAmount > 0 ? 'required' : 'nullable',
+                'string',
+                'max:500',
+            ],
+        ])->validate();
 
         $tableIds = $openBill->groups()->whereNotNull('table_id')->pluck('table_id');
         if ($tableIds->isNotEmpty()) {
@@ -300,9 +309,11 @@ class OpenBillController extends Controller
             }
         }
 
-        $openBill->groups()->each(fn ($group) => $group->items()->delete());
-        $openBill->groups()->delete();
-        $openBill->involvedStaff()->delete();
+        $openBill->update([
+            'delete_reason' => $data['delete_reason'] ?? null,
+            'deleted_by_staff_id' => $request->user()?->id,
+            'deleted_by_staff_name' => $request->user()?->name,
+        ]);
         $openBill->delete();
 
         return response()->json(['message' => 'Draft deleted.']);
@@ -703,5 +714,15 @@ class OpenBillController extends Controller
                 'final_total' => $finalTotal,
             ],
         ];
+    }
+
+    private function resolveDeletePayload(Request $request): array
+    {
+        $payload = $request->all();
+        if (!is_array($payload)) {
+            return [];
+        }
+
+        return $payload;
     }
 }

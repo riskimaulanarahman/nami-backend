@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\OpenBillStatus;
 use App\Enums\OrderStatus;
 use App\Http\Controllers\Controller;
 use App\Models\Ingredient;
@@ -189,6 +190,35 @@ class ReportController extends Controller
         ]]);
     }
 
+    public function deletedDrafts(Request $request)
+    {
+        $query = OpenBill::onlyTrashed()
+            ->where('status', OpenBillStatus::Draft)
+            ->with(['groups.items'])
+            ->orderByDesc('deleted_at');
+
+        $this->applyDateRange($query, $request, 'deleted_at');
+
+        $drafts = $query->get();
+
+        $billiardDrafts = $drafts->filter(
+            fn (OpenBill $draft) => $draft->reportSessionType() === 'billiard'
+        );
+        $fnbDrafts = $drafts->filter(
+            fn (OpenBill $draft) => $draft->reportSessionType() !== 'billiard'
+        );
+
+        return response()->json(['data' => [
+            'total_deleted_drafts' => $drafts->count(),
+            'total_deleted_amount' => $drafts->sum(fn (OpenBill $draft) => $draft->draftTotalAmount()),
+            'billiard_count' => $billiardDrafts->count(),
+            'fnb_count' => $fnbDrafts->count(),
+            'billiard_amount' => $billiardDrafts->sum(fn (OpenBill $draft) => $draft->draftTotalAmount()),
+            'fnb_amount' => $fnbDrafts->sum(fn (OpenBill $draft) => $draft->draftTotalAmount()),
+            'entries' => $this->mapDeletedDrafts($drafts),
+        ]]);
+    }
+
     private function applyDateRange(Builder $query, Request $request, string $column = 'created_at'): void
     {
         if ($request->has('from')) {
@@ -216,6 +246,24 @@ class ReportController extends Controller
                 'refund_reason' => $order->refund_reason,
                 'served_by' => $order->served_by,
                 'status' => $order->status,
+            ])
+            ->values();
+    }
+
+    private function mapDeletedDrafts($drafts)
+    {
+        return $drafts
+            ->map(fn (OpenBill $draft) => [
+                'id' => $draft->id,
+                'code' => $draft->code,
+                'customer_name' => $draft->customer_name,
+                'table_name' => $draft->reportTableName(),
+                'session_type' => $draft->reportSessionType(),
+                'billing_mode' => $draft->billing_mode?->value,
+                'total_amount' => $draft->draftTotalAmount(),
+                'delete_reason' => $draft->delete_reason,
+                'deleted_at' => $draft->deleted_at,
+                'deleted_by_staff_name' => $draft->deleted_by_staff_name,
             ])
             ->values();
     }

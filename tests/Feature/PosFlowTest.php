@@ -718,6 +718,285 @@ class PosFlowTest extends TestCase
             ->assertJsonPath('data.totals.final_total', 18000);
     }
 
+    public function test_delete_draft_requires_reason_when_total_amount_is_positive(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Delete Reason', 'delete-reason@example.com', 'password123', '7788');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '7788');
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Drink',
+            'emoji' => '🥤',
+        ]);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Thai Tea',
+            'category_id' => $category->id,
+            'legacy_category' => 'drink',
+            'price' => 15000,
+            'cost' => 5000,
+            'is_available' => true,
+        ]);
+
+        $this->openShift($staffToken);
+
+        $createBill = $this->postJson('/api/open-bills', [
+            'customer_name' => 'Delete Draft',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $openBillId = $createBill->json('data.id');
+
+        $this->postJson("/api/open-bills/{$openBillId}/add-item", [
+            'fulfillment_type' => 'takeaway',
+            'menu_item_id' => $menuItem->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $this->deleteJson("/api/open-bills/{$openBillId}", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(422)
+            ->assertJsonValidationErrors(['delete_reason']);
+
+        $this->assertDatabaseHas('open_bills', [
+            'id' => $openBillId,
+            'deleted_at' => null,
+        ]);
+    }
+
+    public function test_delete_draft_soft_deletes_and_records_reason_while_restoring_stock_and_freeing_table(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Delete Draft', 'delete-draft@example.com', 'password123', '7799');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '7799');
+
+        $table = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Meja Delete',
+            'type' => 'standard',
+            'hourly_rate' => 20000,
+        ]);
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Food',
+            'emoji' => '🍜',
+        ]);
+
+        $ingredient = Ingredient::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Mie',
+            'unit' => 'porsi',
+            'stock' => 10,
+            'min_stock' => 1,
+        ]);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Mie Goreng',
+            'category_id' => $category->id,
+            'legacy_category' => 'food',
+            'price' => 22000,
+            'cost' => 9000,
+            'is_available' => true,
+        ]);
+
+        MenuItemRecipe::create([
+            'tenant_id' => $tenant->id,
+            'menu_item_id' => $menuItem->id,
+            'ingredient_id' => $ingredient->id,
+            'quantity' => 2,
+        ]);
+
+        $this->openShift($staffToken);
+
+        $createBill = $this->postJson('/api/open-bills', [
+            'table_id' => $table->id,
+            'customer_name' => 'Delete Audit',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $openBillId = $createBill->json('data.id');
+
+        $this->postJson("/api/open-bills/{$openBillId}/add-item", [
+            'fulfillment_type' => 'dine-in',
+            'menu_item_id' => $menuItem->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $ingredient->refresh();
+        $this->assertSame(8, (int) $ingredient->stock);
+
+        $reason = 'Customer batal lanjut order';
+
+        $this->deleteJson("/api/open-bills/{$openBillId}", [
+            'delete_reason' => $reason,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $this->assertSoftDeleted('open_bills', [
+            'id' => $openBillId,
+            'delete_reason' => $reason,
+            'deleted_by_staff_id' => $admin->id,
+            'deleted_by_staff_name' => $admin->name,
+        ]);
+
+        $deletedBill = OpenBill::withTrashed()->findOrFail($openBillId);
+        $this->assertNotNull($deletedBill->deleted_at);
+
+        $ingredient->refresh();
+        $table->refresh();
+
+        $this->assertSame(10, (int) $ingredient->stock);
+        $this->assertNull($table->active_open_bill_id);
+
+        $this->getJson('/api/open-bills', [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonCount(0, 'data');
+    }
+
+    public function test_delete_zero_nominal_draft_without_reason_succeeds(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Zero Delete', 'zero-delete@example.com', 'password123', '6611');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '6611');
+
+        $this->openShift($staffToken);
+
+        $createBill = $this->postJson('/api/open-bills', [
+            'customer_name' => 'Zero Draft',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $openBillId = $createBill->json('data.id');
+
+        $this->deleteJson("/api/open-bills/{$openBillId}", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $this->assertSoftDeleted('open_bills', [
+            'id' => $openBillId,
+            'delete_reason' => null,
+        ]);
+    }
+
+    public function test_deleted_drafts_report_uses_deleted_at_and_returns_summary_and_entries(): void
+    {
+        $reportDay = \Illuminate\Support\Carbon::parse('2026-04-25 10:00:00');
+        \Illuminate\Support\Carbon::setTestNow($reportDay);
+
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Deleted Report', 'deleted-report@example.com', 'password123', '6622');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '6622');
+
+        $fnbDraft = OpenBill::create([
+            'tenant_id' => $tenant->id,
+            'code' => 'OB-FNB-DEL',
+            'customer_name' => 'Walk In',
+            'status' => OpenBillStatus::Draft,
+            'origin_staff_id' => $admin->id,
+            'origin_staff_name' => $admin->name,
+        ]);
+
+        $fnbGroup = $fnbDraft->groups()->create([
+            'tenant_id' => $tenant->id,
+            'fulfillment_type' => 'dine-in',
+            'table_name' => 'Meja Cafe',
+            'subtotal' => 18000,
+        ]);
+
+        $fnbGroup->items()->create([
+            'tenant_id' => $tenant->id,
+            'menu_item_id' => MenuItem::create([
+                'tenant_id' => $tenant->id,
+                'name' => 'Es Teh',
+                'category_id' => MenuCategory::create([
+                    'tenant_id' => $tenant->id,
+                    'name' => 'Drink Deleted',
+                    'emoji' => '🥤',
+                ])->id,
+                'legacy_category' => 'drink',
+                'price' => 18000,
+                'cost' => 5000,
+                'is_available' => true,
+            ])->id,
+            'quantity' => 1,
+            'unit_price' => 18000,
+            'added_at' => now(),
+        ]);
+
+        $fnbDraft->forceFill([
+            'delete_reason' => 'Customer berubah pikiran',
+            'deleted_by_staff_id' => $admin->id,
+            'deleted_by_staff_name' => $admin->name,
+        ])->save();
+        $fnbDraft->delete();
+
+        \Illuminate\Support\Carbon::setTestNow($reportDay->copy()->addHour());
+
+        $billiardDraft = OpenBill::create([
+            'tenant_id' => $tenant->id,
+            'code' => 'OB-BIL-DEL',
+            'customer_name' => 'Session Draft',
+            'status' => OpenBillStatus::Draft,
+            'origin_staff_id' => $admin->id,
+            'origin_staff_name' => $admin->name,
+            'source_table_name' => 'Table 7',
+            'session_type' => 'billiard',
+            'billing_mode' => 'package',
+            'session_charge_total' => 60000,
+        ]);
+
+        $billiardDraft->forceFill([
+            'delete_reason' => 'Kasir salah simpan draft',
+            'deleted_by_staff_id' => $admin->id,
+            'deleted_by_staff_name' => $admin->name,
+        ])->save();
+        $billiardDraft->delete();
+
+        \Illuminate\Support\Carbon::setTestNow($reportDay->copy()->subDay());
+
+        $oldDraft = OpenBill::create([
+            'tenant_id' => $tenant->id,
+            'code' => 'OB-OLD-DEL',
+            'customer_name' => 'Old Draft',
+            'status' => OpenBillStatus::Draft,
+            'origin_staff_id' => $admin->id,
+            'origin_staff_name' => $admin->name,
+            'session_charge_total' => 7000,
+        ]);
+
+        $oldDraft->forceFill([
+            'delete_reason' => 'Out of range',
+            'deleted_by_staff_id' => $admin->id,
+            'deleted_by_staff_name' => $admin->name,
+        ])->save();
+        $oldDraft->delete();
+
+        \Illuminate\Support\Carbon::setTestNow();
+
+        $this->getJson('/api/reports/deleted-drafts?from=2026-04-25T00:00:00&to=2026-04-25T23:59:59', [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.total_deleted_drafts', 2)
+            ->assertJsonPath('data.total_deleted_amount', 78000)
+            ->assertJsonPath('data.billiard_count', 1)
+            ->assertJsonPath('data.fnb_count', 1)
+            ->assertJsonPath('data.billiard_amount', 60000)
+            ->assertJsonPath('data.fnb_amount', 18000)
+            ->assertJsonPath('data.entries.0.code', 'OB-BIL-DEL')
+            ->assertJsonPath('data.entries.0.session_type', 'billiard')
+            ->assertJsonPath('data.entries.0.total_amount', 60000)
+            ->assertJsonPath('data.entries.1.code', 'OB-FNB-DEL')
+            ->assertJsonPath('data.entries.1.session_type', 'cafe')
+            ->assertJsonPath('data.entries.1.total_amount', 18000);
+    }
+
     public function test_refund_reason_is_persisted_and_report_endpoints_include_refund_metrics(): void
     {
         [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Refund', 'refund@example.com', 'password123', '5555');
