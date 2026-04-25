@@ -193,7 +193,10 @@ class ReportController extends Controller
     public function deletedDrafts(Request $request)
     {
         $query = OpenBill::onlyTrashed()
-            ->where('status', OpenBillStatus::Draft)
+            ->whereIn('status', [
+                OpenBillStatus::Open,
+                OpenBillStatus::Draft,
+            ])
             ->with(['groups.items'])
             ->orderByDesc('deleted_at');
 

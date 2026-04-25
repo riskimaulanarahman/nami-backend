@@ -997,6 +997,65 @@ class PosFlowTest extends TestCase
             ->assertJsonPath('data.entries.1.total_amount', 18000);
     }
 
+    public function test_deleted_drafts_report_includes_deleted_open_bill_rows(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Deleted Open Bill', 'deleted-open-bill@example.com', 'password123', '6633');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '6633');
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Drink',
+            'emoji' => '🥤',
+        ]);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Jus Alpukat',
+            'category_id' => $category->id,
+            'legacy_category' => 'drink',
+            'price' => 24000,
+            'cost' => 8000,
+            'is_available' => true,
+        ]);
+
+        $this->openShift($staffToken);
+
+        $createBill = $this->postJson('/api/open-bills', [
+            'customer_name' => 'Deleted Open Bill',
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertStatus(201);
+
+        $openBillId = $createBill->json('data.id');
+
+        $this->postJson("/api/open-bills/{$openBillId}/add-item", [
+            'fulfillment_type' => 'takeaway',
+            'menu_item_id' => $menuItem->id,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $reason = 'Kasir hapus bill yang belum disimpan';
+
+        $this->deleteJson("/api/open-bills/{$openBillId}", [
+            'delete_reason' => $reason,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $this->getJson('/api/reports/deleted-drafts?from=2026-04-25T00:00:00&to=2026-04-25T23:59:59', [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.total_deleted_drafts', 1)
+            ->assertJsonPath('data.total_deleted_amount', 24000)
+            ->assertJsonPath('data.fnb_count', 1)
+            ->assertJsonPath('data.entries.0.id', $openBillId)
+            ->assertJsonPath('data.entries.0.code', $createBill->json('data.code'))
+            ->assertJsonPath('data.entries.0.session_type', 'cafe')
+            ->assertJsonPath('data.entries.0.total_amount', 24000)
+            ->assertJsonPath('data.entries.0.delete_reason', $reason);
+    }
+
     public function test_refund_reason_is_persisted_and_report_endpoints_include_refund_metrics(): void
     {
         [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Refund', 'refund@example.com', 'password123', '5555');
