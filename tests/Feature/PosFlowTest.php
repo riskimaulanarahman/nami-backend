@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\MenuCategory;
+use App\Models\CashierShift;
 use App\Models\Ingredient;
 use App\Models\MenuItem;
 use App\Models\MenuItemRecipe;
@@ -2378,6 +2379,59 @@ class PosFlowTest extends TestCase
         $this->assertSame('Direct', $parents['cash']['children'][0]['child_name']);
         $this->assertSame(75000, $parents['qris']['gross_revenue']);
         $this->assertSame('BNI', $parents['qris']['children'][0]['child_name']);
+    }
+
+    public function test_cashier_shifts_index_filters_by_opened_at_range(): void
+    {
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Shift Filter', 'shift-filter@example.com', 'password123', '4546');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '4546');
+
+        $insideShift = CashierShift::create([
+            'tenant_id' => $tenant->id,
+            'staff_id' => $admin->id,
+            'staff_name' => $admin->name,
+            'status' => 'closed',
+            'opened_at' => \Illuminate\Support\Carbon::parse('2026-04-25 09:00:00'),
+            'closed_at' => \Illuminate\Support\Carbon::parse('2026-04-25 17:00:00'),
+            'opening_cash' => 100000,
+            'closing_cash' => 145000,
+            'expected_cash' => 140000,
+            'cash_sales' => 50000,
+            'cash_refunds' => 5000,
+            'non_cash_sales' => 30000,
+            'non_cash_refunds' => 0,
+            'total_expenses' => 5000,
+            'transaction_count' => 3,
+            'refund_count' => 1,
+        ]);
+
+        $outsideShift = CashierShift::create([
+            'tenant_id' => $tenant->id,
+            'staff_id' => $admin->id,
+            'staff_name' => $admin->name,
+            'status' => 'closed',
+            'opened_at' => \Illuminate\Support\Carbon::parse('2026-04-20 09:00:00'),
+            'closed_at' => \Illuminate\Support\Carbon::parse('2026-04-20 17:00:00'),
+            'opening_cash' => 90000,
+            'closing_cash' => 100000,
+            'expected_cash' => 100000,
+            'cash_sales' => 10000,
+            'cash_refunds' => 0,
+            'non_cash_sales' => 15000,
+            'non_cash_refunds' => 0,
+            'total_expenses' => 0,
+            'transaction_count' => 1,
+            'refund_count' => 0,
+        ]);
+
+        $response = $this->getJson('/api/cashier-shifts?from=2026-04-25T00:00:00Z&to=2026-04-25T23:59:59Z', [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk();
+
+        $ids = collect($response->json('data.data'))->pluck('id');
+
+        $this->assertTrue($ids->contains($insideShift->id));
+        $this->assertFalse($ids->contains($outsideShift->id));
     }
 
     public function test_package_bill_exposes_remaining_minutes_and_expiry_state(): void

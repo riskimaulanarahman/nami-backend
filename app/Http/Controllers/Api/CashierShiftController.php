@@ -5,16 +5,28 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\CashierShift;
 use App\Services\CashierShiftService;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 
 class CashierShiftController extends Controller
 {
     public function __construct(private CashierShiftService $shiftService) {}
 
-    public function index()
+    public function index(Request $request)
     {
+        $query = CashierShift::with('involvedStaff')
+            ->orderByDesc('opened_at');
+
+        if ($request->has('from')) {
+            $query->where('opened_at', '>=', Carbon::parse($request->from)->startOfDay());
+        }
+
+        if ($request->has('to')) {
+            $query->where('opened_at', '<=', Carbon::parse($request->to)->endOfDay());
+        }
+
         return response()->json([
-            'data' => CashierShift::with('involvedStaff')->orderByDesc('opened_at')->paginate(50),
+            'data' => $query->paginate(50),
         ]);
     }
 
