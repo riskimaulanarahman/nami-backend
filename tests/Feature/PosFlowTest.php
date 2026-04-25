@@ -210,6 +210,225 @@ class PosFlowTest extends TestCase
         $this->assertNotEmpty($transactions->json('data'));
     }
 
+    public function test_open_bill_billiard_uses_minimum_hour_then_proportional_minutes_while_package_overrun_keeps_hourly_rounding(): void
+    {
+        $fixedNow = \Illuminate\Support\Carbon::parse('2026-04-25 12:00:00');
+        \Illuminate\Support\Carbon::setTestNow($fixedNow);
+
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Minute Billing', 'minute-billing@example.com', 'password123', '4545');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '4545');
+
+        $payment = PaymentOption::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Cash',
+            'type' => 'cash',
+            'is_active' => true,
+        ]);
+
+        $category = MenuCategory::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Snack',
+            'emoji' => '🍟',
+        ]);
+
+        $menuItem = MenuItem::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Fries',
+            'category_id' => $category->id,
+            'legacy_category' => 'food',
+            'price' => 25000,
+            'cost' => 7000,
+            'emoji' => '🍟',
+            'is_available' => true,
+        ]);
+
+        $this->openShift($staffToken);
+
+        $invalidTable = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Invalid Timer',
+            'type' => 'standard',
+            'hourly_rate' => 25000,
+            'status' => 'occupied',
+            'session_type' => 'billiard',
+            'billing_mode' => 'open-bill',
+        ]);
+
+        $zeroMinuteTable = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Zero Minute',
+            'type' => 'standard',
+            'hourly_rate' => 25000,
+            'status' => 'occupied',
+            'start_time' => $fixedNow->copy(),
+            'session_type' => 'billiard',
+            'billing_mode' => 'open-bill',
+        ]);
+
+        $fiftyNineMinuteTable = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Fifty Nine',
+            'type' => 'standard',
+            'hourly_rate' => 25000,
+            'status' => 'occupied',
+            'start_time' => $fixedNow->copy()->subMinutes(59),
+            'session_type' => 'billiard',
+            'billing_mode' => 'open-bill',
+        ]);
+
+        $sixtyMinuteTable = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Sixty Minute',
+            'type' => 'standard',
+            'hourly_rate' => 25000,
+            'status' => 'occupied',
+            'start_time' => $fixedNow->copy()->subMinutes(60),
+            'session_type' => 'billiard',
+            'billing_mode' => 'open-bill',
+        ]);
+
+        $sixtyOneMinuteTable = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Sixty One',
+            'type' => 'standard',
+            'hourly_rate' => 25000,
+            'status' => 'occupied',
+            'start_time' => $fixedNow->copy()->subMinutes(61),
+            'session_type' => 'billiard',
+            'billing_mode' => 'open-bill',
+        ]);
+
+        $fourHourFifteenTable = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Four Fifteen',
+            'type' => 'standard',
+            'hourly_rate' => 25000,
+            'status' => 'occupied',
+            'start_time' => $fixedNow->copy()->subMinutes(255),
+            'session_type' => 'billiard',
+            'billing_mode' => 'open-bill',
+        ]);
+
+        $draftTable = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Draft Minute Billing',
+            'type' => 'vip',
+            'hourly_rate' => 40000,
+            'status' => 'occupied',
+            'start_time' => $fixedNow->copy()->subMinutes(80),
+            'session_type' => 'billiard',
+            'billing_mode' => 'open-bill',
+        ]);
+
+        TableOrderItem::create([
+            'tenant_id' => $tenant->id,
+            'table_id' => $draftTable->id,
+            'menu_item_id' => $menuItem->id,
+            'quantity' => 1,
+            'unit_price' => 25000,
+            'added_at' => $fixedNow->copy()->subMinutes(20),
+        ]);
+
+        $overrunTable = Table::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Overrun Legacy',
+            'type' => 'standard',
+            'hourly_rate' => 25000,
+            'status' => 'occupied',
+            'start_time' => $fixedNow->copy()->subMinutes(90),
+            'session_type' => 'billiard',
+            'billing_mode' => 'open-bill',
+            'selected_package_name' => 'Paket 1 Jam',
+            'selected_package_hours' => 1,
+            'selected_package_price' => 40000,
+            'package_minutes_total' => 60,
+            'package_total_price' => 40000,
+            'package_expired_at' => $fixedNow->copy()->subMinutes(30),
+            'overrun_started_at' => $fixedNow->copy()->subMinutes(30),
+        ]);
+
+        $this->getJson('/api/tables', [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonFragment([
+                'id' => $sixtyOneMinuteTable->id,
+                'elapsed_minutes' => 61,
+                'billing_mode' => 'open-bill',
+            ]);
+
+        $this->getJson("/api/tables/{$sixtyOneMinuteTable->id}", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.elapsed_minutes', 61)
+            ->assertJsonPath('data.billing_mode', 'open-bill');
+
+        $this->getJson("/api/tables/{$invalidTable->id}/bill", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.rental_cost', 0)
+            ->assertJsonPath('data.grand_total', 0);
+
+        $this->getJson("/api/tables/{$zeroMinuteTable->id}/bill", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.duration_minutes', 0)
+            ->assertJsonPath('data.rental_cost', 25000);
+
+        $this->getJson("/api/tables/{$fiftyNineMinuteTable->id}/bill", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.duration_minutes', 59)
+            ->assertJsonPath('data.rental_cost', 25000);
+
+        $this->getJson("/api/tables/{$sixtyMinuteTable->id}/bill", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.duration_minutes', 60)
+            ->assertJsonPath('data.rental_cost', 25000);
+
+        $this->getJson("/api/tables/{$sixtyOneMinuteTable->id}/bill", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.duration_minutes', 61)
+            ->assertJsonPath('data.rental_cost', 26000);
+
+        $this->getJson("/api/tables/{$fourHourFifteenTable->id}/bill", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.duration_minutes', 255)
+            ->assertJsonPath('data.rental_cost', 107000)
+            ->assertJsonPath('data.grand_total', 107000);
+
+        $this->getJson("/api/tables/{$overrunTable->id}/bill", [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.duration_minutes', 90)
+            ->assertJsonPath('data.active_overrun_minutes', 30)
+            ->assertJsonPath('data.rental_cost', 65000)
+            ->assertJsonPath('data.grand_total', 65000);
+
+        $this->postJson("/api/tables/{$fourHourFifteenTable->id}/checkout", [
+            'payment_method_id' => $payment->id,
+            'payment_method_name' => 'Cash',
+            'cash_received' => 120000,
+        ], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.rental_cost', 107000)
+            ->assertJsonPath('data.grand_total', 107000)
+            ->assertJsonPath('data.duration_minutes', 255);
+
+        $draftResponse = $this->postJson("/api/tables/{$draftTable->id}/close-to-draft", [], [
+            'Authorization' => "Bearer {$staffToken}",
+        ])->assertOk()
+            ->assertJsonPath('data.session_charge_total', 54000);
+
+        $storedDraft = OpenBill::findOrFail($draftResponse->json('data.id'));
+        $this->assertSame(54000, (int) $storedDraft->session_charge_total);
+
+        \Illuminate\Support\Carbon::setTestNow();
+    }
+
     public function test_open_bill_checkout_clamps_negative_duration_to_zero(): void
     {
         [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Cafe', 'cafe@example.com', 'password123', '4321');
@@ -1284,8 +1503,8 @@ class PosFlowTest extends TestCase
             'Authorization' => "Bearer {$staffToken}",
         ])->assertOk()
             ->assertJsonPath('data.locked_final', true)
-            ->assertJsonPath('data.session_charge_total', 80000)
-            ->assertJsonPath('data.totals.final_total', 105000);
+            ->assertJsonPath('data.session_charge_total', 54000)
+            ->assertJsonPath('data.totals.final_total', 79000);
 
         $checkout = $this->postJson("/api/open-bills/{$draftId}/checkout", [
             'payment_method_id' => $payment->id,
@@ -1297,9 +1516,9 @@ class PosFlowTest extends TestCase
             ->assertJsonPath('data.table_id', $table->id)
             ->assertJsonPath('data.table_type', 'vip')
             ->assertJsonPath('data.bill_type', 'billiard')
-            ->assertJsonPath('data.rental_cost', 80000)
+            ->assertJsonPath('data.rental_cost', 54000)
             ->assertJsonPath('data.duration_minutes', 80)
-            ->assertJsonPath('data.grand_total', 105000);
+            ->assertJsonPath('data.grand_total', 79000);
 
         $this->assertNull(OpenBill::find($draftId));
     }

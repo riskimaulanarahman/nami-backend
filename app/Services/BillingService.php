@@ -124,7 +124,7 @@ class BillingService
         return max(0, intval(floor($anchor->diffInSeconds(now(), false) / 60)));
     }
 
-    private function calculateOpenBillRentalCost(int $durationMinutes, int $hourlyRate): int
+    private function calculateRoundedHourlyRentalCost(int $durationMinutes, int $hourlyRate): int
     {
         if ($durationMinutes <= 0 || $hourlyRate <= 0) {
             return 0;
@@ -133,9 +133,36 @@ class BillingService
         return intval(ceil($durationMinutes / 60)) * $hourlyRate;
     }
 
+    private function roundUpToNearestThousand(int|float $amount): int
+    {
+        if ($amount <= 0) {
+            return 0;
+        }
+
+        return intval(ceil($amount / 1000)) * 1000;
+    }
+
+    private function calculateMinimumHourThenProportionalRentalCost(
+        Table $table,
+        int $durationMinutes,
+        int $hourlyRate,
+    ): int {
+        if (!$table->start_time || $hourlyRate <= 0) {
+            return 0;
+        }
+
+        if ($durationMinutes <= 60) {
+            return $hourlyRate;
+        }
+
+        return $this->roundUpToNearestThousand(
+            ($durationMinutes * $hourlyRate) / 60,
+        );
+    }
+
     public function calculateOverrunRentalCost(Table $table): int
     {
-        return $this->calculateOpenBillRentalCost(
+        return $this->calculateRoundedHourlyRentalCost(
             $this->calculateActiveOverrunMinutes($table),
             $table->hourly_rate,
         );
@@ -161,7 +188,11 @@ class BillingService
                 $this->calculateOverrunRentalCost($table);
         }
 
-        return $this->calculateOpenBillRentalCost($durationMinutes, $table->hourly_rate);
+        return $this->calculateMinimumHourThenProportionalRentalCost(
+            $table,
+            $durationMinutes,
+            $table->hourly_rate,
+        );
     }
 
     /**
