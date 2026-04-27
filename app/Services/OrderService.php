@@ -578,6 +578,16 @@ class OrderService
                 'refunded_in_cashier_shift_id' => $shift->id,
             ]);
 
+            // Restore ingredient stock for all refunded items
+            $order->loadMissing(['groups.items.menuItem.recipes.ingredient']);
+            foreach ($order->groups as $group) {
+                foreach ($group->items as $item) {
+                    if ($item->menuItem) {
+                        $this->stockService->restockForMenuItem($item->menuItem, $item->quantity);
+                    }
+                }
+            }
+
             $this->cashierShiftService->recordRefund(
                 $shift,
                 $order->grand_total,

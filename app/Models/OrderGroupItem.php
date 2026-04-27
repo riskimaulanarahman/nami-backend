@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Models\Concerns\TenantScoped;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class OrderGroupItem extends Model
 {
@@ -27,5 +28,6 @@ class OrderGroupItem extends Model
         ];
     }
 
-    public function group() { return $this->belongsTo(OrderGroup::class, 'order_group_id'); }
+    public function group(): BelongsTo { return $this->belongsTo(OrderGroup::class, 'order_group_id'); }
+    public function menuItem(): BelongsTo { return $this->belongsTo(MenuItem::class); }
 }
