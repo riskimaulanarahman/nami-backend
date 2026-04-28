@@ -15,7 +15,7 @@ class LoginRequest extends FormRequest
     {
         return [
             'staff_id' => ['required', 'string', 'exists:staff,id'],
-            'pin' => ['required', 'string', 'min:4'],
+            'pin' => ['required', 'digits:6'],
         ];
     }
 }

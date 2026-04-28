@@ -14,6 +14,7 @@ use App\Listeners\UpdateMemberPoints;
 use App\Listeners\NotifyLowStock;
 use App\Listeners\AuditTrailLogger;
 use App\Listeners\SendShiftClosedEmail;
+use App\Listeners\SendShiftStockEmail;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
@@ -42,6 +43,7 @@ class AppServiceProvider extends ServiceProvider
         Event::listen(ShiftOpened::class, [AuditTrailLogger::class, 'handle']);
         Event::listen(ShiftClosed::class, [AuditTrailLogger::class, 'handle']);
         Event::listen(ShiftClosed::class, [SendShiftClosedEmail::class, 'handle']);
+        Event::listen(ShiftClosed::class, [SendShiftStockEmail::class, 'handle']);
         
         Event::listen(StockLow::class, [NotifyLowStock::class, 'handle']);
 

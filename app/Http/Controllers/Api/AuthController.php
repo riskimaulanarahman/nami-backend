@@ -58,7 +58,7 @@ class AuthController extends Controller
     {
         $data = $request->validate([
             'staff_id' => ['required', 'string'],
-            'pin' => ['required', 'string', 'min:4'],
+            'pin' => ['required', 'digits:6'],
         ]);
 
         /** @var Tenant $tenant */
@@ -114,7 +114,7 @@ class AuthController extends Controller
     {
         $request->validate([
             'staff_id' => 'required|string',
-            'pin' => 'required|string',
+            'pin' => 'required|digits:6',
         ]);
 
         $tenantId = $request->user()?->tenant_id;
@@ -124,4 +124,3 @@ class AuthController extends Controller
         return response()->json(['data' => ['valid' => $valid]]);
     }
 }
-

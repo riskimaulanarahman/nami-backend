@@ -21,7 +21,7 @@ class StaffController extends Controller
         $data = $request->validate([
             'name' => 'required|string|max:255',
             'username' => ['required', 'string', 'max:255', Rule::unique('staff', 'username')->where('tenant_id', $tenantId)],
-            'pin' => 'required|string|min:4|max:10',
+            'pin' => 'required|digits:6',
             'role' => 'required|in:admin,kasir',
             'avatar' => 'nullable|string|max:10',
             'is_active' => 'boolean',
@@ -48,7 +48,7 @@ class StaffController extends Controller
                 'max:255',
                 Rule::unique('staff', 'username')->where('tenant_id', $tenantId)->ignore($staff->id),
             ],
-            'pin' => 'sometimes|string|min:4|max:10',
+            'pin' => 'sometimes|digits:6',
             'role' => 'sometimes|in:admin,kasir',
             'avatar' => 'nullable|string|max:10',
             'is_active' => 'sometimes|boolean',

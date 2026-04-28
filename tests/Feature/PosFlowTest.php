@@ -95,8 +95,8 @@ class PosFlowTest extends TestCase
 
     public function test_staff_token_cannot_access_other_tenant_table(): void
     {
-        [$tenantA, $adminA] = $this->createTenantWithAdmin('Tenant A', 'a@example.com', 'password123', '1111');
-        [$tenantB] = $this->createTenantWithAdmin('Tenant B', 'b@example.com', 'password123', '2222');
+        [$tenantA, $adminA] = $this->createTenantWithAdmin('Tenant A', 'a@example.com', 'password123', '111111');
+        [$tenantB] = $this->createTenantWithAdmin('Tenant B', 'b@example.com', 'password123', '222222');
 
         Table::create([
             'tenant_id' => $tenantA->id,
@@ -112,7 +112,7 @@ class PosFlowTest extends TestCase
             'hourly_rate' => 20000,
         ]);
 
-        $staffTokenA = $this->loginAsStaff($tenantA, $adminA, 'password123', '1111');
+        $staffTokenA = $this->loginAsStaff($tenantA, $adminA, 'password123', '111111');
 
         $tables = $this->getJson('/api/tables', [
             'Authorization' => "Bearer {$staffTokenA}",
@@ -128,8 +128,8 @@ class PosFlowTest extends TestCase
 
     public function test_complete_pos_flow_billiard_with_new_auth_chain(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant A', 'a@example.com', 'password123', '1234');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1234');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant A', 'a@example.com', 'password123', '123456');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '123456');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -216,8 +216,8 @@ class PosFlowTest extends TestCase
         $fixedNow = \Illuminate\Support\Carbon::parse('2026-04-25 12:00:00');
         \Illuminate\Support\Carbon::setTestNow($fixedNow);
 
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Minute Billing', 'minute-billing@example.com', 'password123', '4545');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '4545');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Minute Billing', 'minute-billing@example.com', 'password123', '454545');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '454545');
 
         $payment = PaymentOption::create([
             'tenant_id' => $tenant->id,
@@ -432,8 +432,8 @@ class PosFlowTest extends TestCase
 
     public function test_open_bill_checkout_clamps_negative_duration_to_zero(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Cafe', 'cafe@example.com', 'password123', '4321');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '4321');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Cafe', 'cafe@example.com', 'password123', '432143');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '432143');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -510,8 +510,8 @@ class PosFlowTest extends TestCase
 
     public function test_open_bill_cash_checkout_rejects_cash_received_below_total(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Cash Guard', 'cash-guard@example.com', 'password123', '6789');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '6789');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Cash Guard', 'cash-guard@example.com', 'password123', '678967');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '678967');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -577,8 +577,8 @@ class PosFlowTest extends TestCase
 
     public function test_open_bill_non_cash_checkout_keeps_cash_fields_null_and_orders_index_exposes_them(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant QRIS', 'qris@example.com', 'password123', '7890');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '7890');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant QRIS', 'qris@example.com', 'password123', '789078');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '789078');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -656,8 +656,8 @@ class PosFlowTest extends TestCase
 
     public function test_open_bill_receipt_returns_database_backed_draft_snapshot(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Draft', 'draft@example.com', 'password123', '9876');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '9876');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Draft', 'draft@example.com', 'password123', '987698');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '987698');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -721,8 +721,8 @@ class PosFlowTest extends TestCase
 
     public function test_delete_draft_requires_reason_when_total_amount_is_positive(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Delete Reason', 'delete-reason@example.com', 'password123', '7788');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '7788');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Delete Reason', 'delete-reason@example.com', 'password123', '778877');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '778877');
 
         $category = MenuCategory::create([
             'tenant_id' => $tenant->id,
@@ -770,8 +770,8 @@ class PosFlowTest extends TestCase
 
     public function test_delete_draft_soft_deletes_and_records_reason_while_restoring_stock_and_freeing_table(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Delete Draft', 'delete-draft@example.com', 'password123', '7799');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '7799');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Delete Draft', 'delete-draft@example.com', 'password123', '779977');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '779977');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -864,8 +864,8 @@ class PosFlowTest extends TestCase
 
     public function test_delete_zero_nominal_draft_without_reason_succeeds(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Zero Delete', 'zero-delete@example.com', 'password123', '6611');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '6611');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Zero Delete', 'zero-delete@example.com', 'password123', '661166');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '661166');
 
         $this->openShift($staffToken);
 
@@ -892,8 +892,8 @@ class PosFlowTest extends TestCase
         $reportDay = \Illuminate\Support\Carbon::parse('2026-04-25 10:00:00');
         \Illuminate\Support\Carbon::setTestNow($reportDay);
 
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Deleted Report', 'deleted-report@example.com', 'password123', '6622');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '6622');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Deleted Report', 'deleted-report@example.com', 'password123', '662266');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '662266');
 
         $fnbDraft = OpenBill::create([
             'tenant_id' => $tenant->id,
@@ -1000,8 +1000,8 @@ class PosFlowTest extends TestCase
 
     public function test_deleted_drafts_report_includes_deleted_open_bill_rows(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Deleted Open Bill', 'deleted-open-bill@example.com', 'password123', '6633');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '6633');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Deleted Open Bill', 'deleted-open-bill@example.com', 'password123', '663366');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '663366');
 
         $category = MenuCategory::create([
             'tenant_id' => $tenant->id,
@@ -1059,8 +1059,8 @@ class PosFlowTest extends TestCase
 
     public function test_refund_reason_is_persisted_and_report_endpoints_include_refund_metrics(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Refund', 'refund@example.com', 'password123', '5555');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '5555');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Refund', 'refund@example.com', 'password123', '555555');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '555555');
 
         $billiardTable = Table::create([
             'tenant_id' => $tenant->id,
@@ -1201,8 +1201,8 @@ class PosFlowTest extends TestCase
 
     public function test_dashboard_report_returns_mobile_parity_metrics(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Dashboard', 'dashboard@example.com', 'password123', '1111');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1111');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Dashboard', 'dashboard@example.com', 'password123', '111111');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '111111');
 
         Table::create([
             'tenant_id' => $tenant->id,
@@ -1248,8 +1248,8 @@ class PosFlowTest extends TestCase
 
     public function test_orders_endpoint_supports_filter_and_per_page_for_mobile_history(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Orders', 'orders@example.com', 'password123', '2222');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2222');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Orders', 'orders@example.com', 'password123', '222222');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '222222');
 
         Order::create([
             'tenant_id' => $tenant->id,
@@ -1307,7 +1307,7 @@ class PosFlowTest extends TestCase
 
     public function test_non_admin_refund_uses_staff_session_audit_without_extra_authorization(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Approval', 'approval@example.com', 'password123', '9999');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Approval', 'approval@example.com', 'password123', '999999');
         $cashier = $this->createCashier($tenant, 'Cashier Approval', '123456');
         $staffToken = $this->loginAsStaff($tenant, $cashier, 'password123', '123456');
 
@@ -1353,8 +1353,8 @@ class PosFlowTest extends TestCase
 
     public function test_open_bill_store_accepts_initial_groups_items_and_member_meta(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Snapshot Draft', 'owner-refund@example.com', 'password123', '2222');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2222');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Snapshot Draft', 'owner-refund@example.com', 'password123', '222222');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '222222');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -1431,8 +1431,8 @@ class PosFlowTest extends TestCase
 
     public function test_table_append_draft_orders_creates_linked_open_bill_for_active_table(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Append Draft', 'append-draft@example.com', 'password123', '2255');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2255');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Append Draft', 'append-draft@example.com', 'password123', '225522');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '225522');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -1504,8 +1504,8 @@ class PosFlowTest extends TestCase
 
     public function test_table_append_draft_orders_appends_to_existing_linked_open_bill(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Append Linked', 'append-linked@example.com', 'password123', '2266');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2266');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Append Linked', 'append-linked@example.com', 'password123', '226622');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '226622');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -1595,8 +1595,8 @@ class PosFlowTest extends TestCase
 
     public function test_table_close_to_draft_creates_frozen_standalone_draft_and_frees_table(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Close Draft', 'close-draft@example.com', 'password123', '2277');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2277');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Close Draft', 'close-draft@example.com', 'password123', '227722');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '227722');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -1666,8 +1666,8 @@ class PosFlowTest extends TestCase
 
     public function test_table_close_to_draft_moves_only_linked_table_group_and_keeps_unrelated_open_bill_groups(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Split Draft', 'split-draft@example.com', 'password123', '2288');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2288');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Split Draft', 'split-draft@example.com', 'password123', '228822');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '228822');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -1743,8 +1743,8 @@ class PosFlowTest extends TestCase
 
     public function test_frozen_table_draft_is_returned_by_status_filter_rejects_mutations_and_can_checkout(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Frozen Draft', 'frozen-draft@example.com', 'password123', '2299');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2299');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Frozen Draft', 'frozen-draft@example.com', 'password123', '229922');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '229922');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -1864,8 +1864,8 @@ class PosFlowTest extends TestCase
 
     public function test_stock_is_restored_when_table_and_open_bill_items_are_reduced_removed_or_deleted(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Stock Guard', 'stock@example.com', 'password123', '4444');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '4444');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Stock Guard', 'stock@example.com', 'password123', '444444');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '444444');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -2010,8 +2010,8 @@ class PosFlowTest extends TestCase
 
     public function test_reports_use_refunded_at_and_orders_index_uses_end_of_day_searchable_filters(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Filter Guard', 'filter@example.com', 'password123', '4545');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '4545');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Filter Guard', 'filter@example.com', 'password123', '454545');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '454545');
 
         $payment = PaymentOption::create([
             'tenant_id' => $tenant->id,
@@ -2090,8 +2090,8 @@ class PosFlowTest extends TestCase
 
     public function test_open_bill_creation_blocks_table_conflicts_and_generates_non_reused_codes(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Bill Code', 'billcode@example.com', 'password123', '5656');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '5656');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Bill Code', 'billcode@example.com', 'password123', '565656');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '565656');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -2140,8 +2140,8 @@ class PosFlowTest extends TestCase
 
     public function test_member_code_generation_and_validation_related_endpoints_are_guarded(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Guard More', 'guardmore@example.com', 'password123', '7878');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '7878');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Guard More', 'guardmore@example.com', 'password123', '787878');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '787878');
 
         $this->postJson('/api/cashier-shifts/open', [
             'opening_cash' => 100000,
@@ -2218,8 +2218,8 @@ class PosFlowTest extends TestCase
 
     public function test_payment_option_crud_enforces_system_default_parents_and_child_only_management(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Payment Guard', 'payguard@example.com', 'password123', '8989');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '8989');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Payment Guard', 'payguard@example.com', 'password123', '898989');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '898989');
 
         $list = $this->getJson('/api/payment-options', [
             'Authorization' => "Bearer {$staffToken}",
@@ -2307,8 +2307,8 @@ class PosFlowTest extends TestCase
 
     public function test_payment_method_report_returns_parent_and_child_breakdown(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Payment Report', 'payment-report@example.com', 'password123', '4545');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '4545');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Payment Report', 'payment-report@example.com', 'password123', '454545');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '454545');
 
         $defaults = app(\App\Services\PaymentOptionService::class)
             ->ensureSystemDefaultsForTenant($tenant->id)
@@ -2383,8 +2383,8 @@ class PosFlowTest extends TestCase
 
     public function test_cashier_shifts_index_filters_by_opened_at_range(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Shift Filter', 'shift-filter@example.com', 'password123', '4546');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '4546');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Shift Filter', 'shift-filter@example.com', 'password123', '454646');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '454646');
 
         $insideShift = CashierShift::create([
             'tenant_id' => $tenant->id,
@@ -2438,8 +2438,8 @@ class PosFlowTest extends TestCase
     {
         $fixedNow = \Illuminate\Support\Carbon::parse('2026-04-23 12:00:00');
         \Illuminate\Support\Carbon::setTestNow($fixedNow);
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Package', 'package@example.com', 'password123', '1212');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1212');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Package', 'package@example.com', 'password123', '121212');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '121212');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -2500,8 +2500,8 @@ class PosFlowTest extends TestCase
 
     public function test_extend_package_accumulates_minutes_and_price_and_resets_reminder(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Extend', 'extend@example.com', 'password123', '2323');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2323');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Extend', 'extend@example.com', 'password123', '232323');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '232323');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -2565,8 +2565,8 @@ class PosFlowTest extends TestCase
         \Illuminate\Support\Carbon::setTestNow($fixedNow);
         config(['internal_jobs.token' => 'secret-token']);
 
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Scheduler', 'scheduler@example.com', 'password123', '3434');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '3434');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Scheduler', 'scheduler@example.com', 'password123', '343434');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '343434');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -2663,8 +2663,8 @@ class PosFlowTest extends TestCase
         $fixedNow = \Illuminate\Support\Carbon::parse('2026-04-25 12:00:00');
         \Illuminate\Support\Carbon::setTestNow($fixedNow);
 
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Fallback', 'fallback@example.com', 'password123', '7878');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '7878');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Fallback', 'fallback@example.com', 'password123', '787878');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '787878');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -2709,8 +2709,8 @@ class PosFlowTest extends TestCase
     {
         $fixedNow = \Illuminate\Support\Carbon::parse('2026-04-23 12:00:00');
         \Illuminate\Support\Carbon::setTestNow($fixedNow);
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Read Only Expiry', 'read-expiry@example.com', 'password123', '4545');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '4545');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Read Only Expiry', 'read-expiry@example.com', 'password123', '454545');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '454545');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -2783,8 +2783,8 @@ class PosFlowTest extends TestCase
 
     public function test_menu_item_store_rejects_duplicate_recipe_ingredients(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Guard', 'menu-guard@example.com', 'password123', '5656');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '5656');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Guard', 'menu-guard@example.com', 'password123', '565656');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '565656');
 
         $category = MenuCategory::create([
             'tenant_id' => $tenant->id,
@@ -2833,8 +2833,8 @@ class PosFlowTest extends TestCase
 
     public function test_menu_item_store_derives_cost_from_recipe_without_manual_cost(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Cost', 'menu-cost@example.com', 'password123', '1212');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1212');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Cost', 'menu-cost@example.com', 'password123', '121212');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '121212');
 
         $category = MenuCategory::create([
             'tenant_id' => $tenant->id,
@@ -2881,8 +2881,8 @@ class PosFlowTest extends TestCase
 
     public function test_menu_item_update_ignores_legacy_cost_payload_and_returns_recipe_cost(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Update', 'menu-update@example.com', 'password123', '1313');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1313');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Update', 'menu-update@example.com', 'password123', '131313');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '131313');
 
         $category = MenuCategory::create([
             'tenant_id' => $tenant->id,
@@ -2937,8 +2937,8 @@ class PosFlowTest extends TestCase
 
     public function test_menu_item_without_recipe_returns_zero_cost_even_if_legacy_cost_exists(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Zero', 'menu-zero@example.com', 'password123', '1414');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1414');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Zero', 'menu-zero@example.com', 'password123', '141414');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '141414');
 
         $category = MenuCategory::create([
             'tenant_id' => $tenant->id,
@@ -2965,8 +2965,8 @@ class PosFlowTest extends TestCase
 
     public function test_table_checkout_uses_recipe_derived_cost_for_order_snapshots(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Table Cost', 'table-cost@example.com', 'password123', '1515');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1515');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Table Cost', 'table-cost@example.com', 'password123', '151515');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '151515');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -3053,8 +3053,8 @@ class PosFlowTest extends TestCase
 
     public function test_open_bill_checkout_uses_recipe_derived_cost_for_order_snapshots(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Bill Cost', 'bill-cost@example.com', 'password123', '1616');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1616');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Bill Cost', 'bill-cost@example.com', 'password123', '161616');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '161616');
 
         $table = Table::create([
             'tenant_id' => $tenant->id,
@@ -3143,8 +3143,8 @@ class PosFlowTest extends TestCase
 
     public function test_ingredient_store_uses_safe_defaults_and_exposes_lifecycle_metadata(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient Defaults', 'ingredient-defaults@example.com', 'password123', '1616');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1616');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient Defaults', 'ingredient-defaults@example.com', 'password123', '161616');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '161616');
 
         $this->postJson('/api/ingredients', [
             'name' => 'Gula',
@@ -3171,8 +3171,8 @@ class PosFlowTest extends TestCase
 
     public function test_ingredient_store_rejects_duplicate_name_for_active_and_archived_records(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient Duplicate', 'ingredient-duplicate@example.com', 'password123', '1717');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1717');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient Duplicate', 'ingredient-duplicate@example.com', 'password123', '171717');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '171717');
 
         $activeIngredient = Ingredient::create([
             'tenant_id' => $tenant->id,
@@ -3220,8 +3220,8 @@ class PosFlowTest extends TestCase
 
     public function test_ingredient_delete_force_deletes_unused_record_and_allows_name_reuse(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient Delete', 'ingredient-delete@example.com', 'password123', '1818');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1818');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient Delete', 'ingredient-delete@example.com', 'password123', '181818');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '181818');
 
         $ingredient = Ingredient::create([
             'tenant_id' => $tenant->id,
@@ -3253,8 +3253,8 @@ class PosFlowTest extends TestCase
 
     public function test_ingredient_delete_is_blocked_when_used_in_recipe(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient Recipe Guard', 'ingredient-recipe-guard@example.com', 'password123', '1919');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '1919');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient Recipe Guard', 'ingredient-recipe-guard@example.com', 'password123', '191919');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '191919');
 
         $category = MenuCategory::create([
             'tenant_id' => $tenant->id,
@@ -3298,8 +3298,8 @@ class PosFlowTest extends TestCase
 
     public function test_ingredient_delete_is_blocked_when_stock_history_exists(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient History Guard', 'ingredient-history-guard@example.com', 'password123', '2020');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2020');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient History Guard', 'ingredient-history-guard@example.com', 'password123', '202020');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '202020');
 
         $ingredient = Ingredient::create([
             'tenant_id' => $tenant->id,
@@ -3331,8 +3331,8 @@ class PosFlowTest extends TestCase
 
     public function test_ingredient_can_be_archived_and_restored_without_breaking_recipe_references(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient Archive', 'ingredient-archive@example.com', 'password123', '2121');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2121');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Ingredient Archive', 'ingredient-archive@example.com', 'password123', '212121');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '212121');
 
         $category = MenuCategory::create([
             'tenant_id' => $tenant->id,
@@ -3392,8 +3392,8 @@ class PosFlowTest extends TestCase
 
     public function test_menu_item_store_and_update_reject_archived_and_soft_deleted_ingredients(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Ingredient Guard', 'menu-ingredient-guard@example.com', 'password123', '2222');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2222');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Ingredient Guard', 'menu-ingredient-guard@example.com', 'password123', '222222');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '222222');
 
         $category = MenuCategory::create([
             'tenant_id' => $tenant->id,
@@ -3463,8 +3463,8 @@ class PosFlowTest extends TestCase
 
     public function test_menu_item_index_keeps_legacy_soft_deleted_ingredient_visible_in_recipe_and_cost(): void
     {
-        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Legacy Ingredient', 'menu-legacy-ingredient@example.com', 'password123', '2323');
-        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '2323');
+        [$tenant, $admin] = $this->createTenantWithAdmin('Tenant Menu Legacy Ingredient', 'menu-legacy-ingredient@example.com', 'password123', '232323');
+        $staffToken = $this->loginAsStaff($tenant, $admin, 'password123', '232323');
 
         $category = MenuCategory::create([
             'tenant_id' => $tenant->id,
