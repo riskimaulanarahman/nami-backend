@@ -20,11 +20,11 @@ class AuthController extends Controller
 
         $tenant = Tenant::where('email', strtolower($data['email']))->first();
         if (!$tenant || !Hash::check($data['password'], $tenant->password)) {
-            return response()->json(['message' => 'Email atau password tenant salah.'], 401);
+            return response()->json(['message' => 'Incorrect tenant email or password.'], 401);
         }
 
         if (!$tenant->is_active) {
-            return response()->json(['message' => 'Akun tenant tidak aktif.'], 403);
+            return response()->json(['message' => 'Tenant account is inactive.'], 403);
         }
 
         $token = $tenant->createToken('tenant-token')->plainTextToken;
@@ -66,11 +66,11 @@ class AuthController extends Controller
 
         $staff = Staff::where('tenant_id', $tenant->id)->find($data['staff_id']);
         if (!$staff || !Hash::check($data['pin'], $staff->pin)) {
-            return response()->json(['message' => 'PIN salah atau staff tidak ditemukan.'], 401);
+            return response()->json(['message' => 'Incorrect PIN or staff account not found.'], 401);
         }
 
         if (!$staff->is_active) {
-            return response()->json(['message' => 'Akun staff tidak aktif.'], 403);
+            return response()->json(['message' => 'Staff account is inactive.'], 403);
         }
 
         $token = $staff->createToken('staff-pos-token')->plainTextToken;
